@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Crowdsign V1</title>
+<title>Crowdsign V2</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -155,7 +155,7 @@ button{ font:inherit; color:inherit; }
     </nav>
     <div class="center"><span class="status" id="status"><i></i><span id="statusText">Awaiting login</span></span></div>
     <div class="right">
-      <span class="ver" id="ver" title="Build version">V1</span>
+      <span class="ver" id="ver" title="Build version">V2</span>
       <button class="btn ghost" id="btnReplay" disabled title="Replay the transformation (R)">Replay</button>
       <button class="btn accent" id="btnWaveTop" disabled title="Mexican wave (W)" aria-label="Mexican wave">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 13c2 0 2-5 4-5s2 5 4 5 2-9 4-9 2 5 2 5"/></svg>
@@ -195,6 +195,7 @@ button{ font:inherit; color:inherit; }
     <button class="btn" id="btnHold" disabled title="B">Boards down</button>
     <button class="btn" id="btnWave" disabled aria-pressed="false" title="W"><span class="dot"></span>Mexican wave</button>
     <button class="btn" id="btnMill" disabled aria-pressed="false" title="M">Mill about</button>
+    <button class="btn" id="btnSit" disabled title="T">Stand up</button>
     <div class="tc" id="tc"><span class="m">Press Enter to sign in</span></div>
     <div class="spacer"></div>
     <div class="seg" id="viewSeg" role="group" aria-label="Camera">
@@ -211,7 +212,7 @@ button{ font:inherit; color:inherit; }
       <button class="icon-btn" id="btnClose" aria-label="Close settings">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3.5L2.5 7 6 10.5M3 7h7a3.5 3.5 0 0 1 0 7H8"/></svg>
       </button>
-      <span style="color:var(--muted);letter-spacing:.09em">V1</span>
+      <span style="color:var(--muted);letter-spacing:.09em">V2</span>
     </div>
     <section class="sec">
       <h2>Scene <small id="gridNote"></small></h2>
@@ -237,10 +238,11 @@ button{ font:inherit; color:inherit; }
         <li><b>Cards:</b> every fan holds one board showing their slice of the page.</li>
         <li><b>Tifo:</b> one printed banner carried by the hands underneath it.</li>
         <li><b>Shirts:</b> each fan wears one pixel of the page. Needs a big crowd.</li>
+        <li>Fans sit in their seats for cards and shirts, and stand as the Mexican wave reaches them. Everyone stands for the tifo.</li>
       </ul>
       <h3>Shortcuts</h3>
       <ul>
-        <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> switch display, <kbd>W</kbd> Mexican wave, <kbd>B</kbd> boards or banner up/down, <kbd>M</kbd> mill about</li>
+        <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> switch display, <kbd>W</kbd> Mexican wave, <kbd>B</kbd> boards or banner up/down, <kbd>M</kbd> mill about, <kbd>T</kbd> sit down or stand up</li>
         <li><kbd>F</kbd> flat, <kbd>P</kbd> perspective, <kbd>G</kbd> pitchside, <kbd>C</kbd> close-up on the hands, <kbd>R</kbd> replay, <kbd>S</kbd> settings</li>
         <li>Drag to orbit, scroll or pinch to zoom, shift-drag or right-drag to pan.</li>
       </ul>
@@ -255,7 +257,7 @@ window.__SND_RIGHT = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU
 <script>
 (() => {
 'use strict';
-const VERSION = 'V1';
+const VERSION = 'V2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -273,7 +275,7 @@ const settings = {
   count: { 1: 900, 2: 1500, 3: 20000 },
   handScale: 1.0, gap: 0.06,
   waveSpeed: 1.0, waveWidth: 3.2, tifoLift: 0.8, tifoDrift: 0.35, energy: 1.0,
-  autoReveal: true, fov: 42, volume: 0.8, sound: true,
+  autoReveal: true, fov: 42, volume: 0.8, sound: true, seated: true,
 };
 const COUNT_RANGE = { 1: [100, 6000], 2: [300, 6000], 3: [2000, 80000] };
 const HAND_BASE = { 1: 1.35, 2: 1.35, 3: 1.15 };
@@ -325,33 +327,49 @@ const U = {
   uHandScale: { value: 1.35 }, uCell: { value: new THREE.Vector2(0.55, 0.5) }, uGap: { value: 0.06 },
   uZFront: { value: 1.0 }, uLight: { value: new THREE.Vector3(0.35, 0.8, 0.5).normalize() },
   uSky: { value: new THREE.Vector3(0.62, 0.64, 0.7) }, uGround: { value: new THREE.Vector3(0.22, 0.22, 0.26) },
-  uPx: { value: 500 },
+  uPx: { value: 500 }, uSit: { value: 1 },
 };
 
 const GL_COMMON = `
 uniform float uTime; uniform float uMode; uniform float uAssemble; uniform float uHold;
 uniform float uWaveX; uniform float uWaveW; uniform float uWaveOn; uniform float uMill;
 uniform float uHandScale; uniform vec2 uCell; uniform float uGap; uniform float uZFront;
-uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround; uniform float uPx;
+uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround; uniform float uPx; uniform float uSit;
 attribute vec3 iSeat; attribute vec4 iRand; attribute vec3 iShirt; attribute vec3 iSkin; attribute vec2 iHands;
 vec3 rotY(vec3 p, float a){ float c = cos(a); float s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
 vec3 rotX(vec3 p, float a){ float c = cos(a); float s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
 float waveAt(float x){ float d = (x - uWaveX)/uWaveW; return uWaveOn*exp(-d*d); }
 float assembleT(){ float t = clamp(uAssemble*1.6 - iRand.x*0.6, 0.0, 1.0); return t*t*(3.0 - 2.0*t); }
+// seated amount: fans stand up as the wave passes them
+float sitAt(float w){ return uSit*(1.0 - smoothstep(0.08, 0.55, w)); }
+const float SIT_DROP = 0.44; const float SIT_BACK = 0.18;
 void bodyFrame(out vec3 base, out float yaw, out float e, out float w, out float sink){
   e = assembleT(); w = waveAt(iSeat.x);
+  float st = sitAt(w);
   float p1 = iRand.y*6.2831853; float p2 = iRand.z*6.2831853;
-  float mm = uMill*((uMode > 1.5 && uMode < 2.5) ? 0.3 : 1.0);
+  float mm = uMill*((uMode > 1.5 && uMode < 2.5) ? 0.3 : 1.0)*(1.0 - 0.8*st);
   vec2 m = mm*vec2(sin(uTime*0.55 + p1)*0.22 + sin(uTime*0.21 + p2)*0.14, cos(uTime*0.47 + p2)*0.16);
-  float bob = (0.01 + uMill*0.05)*sin(uTime*(1.4 + iRand.w*1.6) + p1);
-  yaw = uMill*0.55*sin(uTime*0.37 + p1*3.0) + (iRand.w - 0.5)*0.12;
-  base = iSeat + vec3(m.x, bob + w*0.18, m.y);
+  float bob = (0.01 + uMill*0.05*(1.0 - 0.6*st))*sin(uTime*(1.4 + iRand.w*1.6) + p1);
+  yaw = (uMill*0.55*sin(uTime*0.37 + p1*3.0))*(1.0 - 0.6*st) + (iRand.w - 0.5)*0.12;
+  base = iSeat + vec3(m.x, bob + w*0.18 - SIT_DROP*st, m.y - SIT_BACK*st);
   sink = -2.4*(1.0 - e);
+}
+// two-bone arm: elbow from shoulder S to wrist W, bending toward pole. Segments stretch only past full reach.
+vec3 elbowIK(vec3 S, vec3 W, vec3 pole, inout float Lu, inout float Lf){
+  vec3 d = W - S; float L = max(length(d), 0.001); vec3 dir = d/L;
+  float reach = (Lu + Lf)*0.995;
+  if(L > reach){ float k = L/reach; Lu *= k; Lf *= k; }
+  float a = (L*L + Lu*Lu - Lf*Lf)/(2.0*L);
+  float h = sqrt(max(Lu*Lu - a*a, 0.0));
+  vec3 p = pole - dir*dot(pole, dir);
+  p = length(p) < 1e-4 ? vec3(0.0, -1.0, 0.0) : normalize(p);
+  return S + dir*a + p*h;
 }
 void boardPose(vec3 base, float yaw, float e, float w, out vec3 c, out vec3 R, out vec3 U, out vec3 N, out vec2 sz){
   float h = uHold;
   float ang = mix(1.2, 0.0, h) + w*mix(0.25, 0.6, h) + uMill*0.3*sin(uTime*0.8 + iRand.z*30.0);
   vec3 lc = vec3(0.0, mix(1.0, 1.45, h) + w*mix(0.95, 0.6, h), mix(0.42, 0.30, h));
+  lc += sitAt(w)*vec3(0.0, 0.05*(1.0 - h), -0.1*(1.0 - h)); // seated: board rests on the lap, within reach
   vec3 held = base + rotY(lc, yaw);
   vec3 flatP = vec3(iSeat.x, iSeat.y + 1.45, uZFront);
   c = mix(flatP, held, e);
@@ -376,7 +394,8 @@ void handPose(bool left, vec3 base, float yaw, float e, float w, float sink, out
     vis = 1.0;
   } else {
     float r = clamp(uHold + w*1.3, 0.0, 1.0);
-    vec3 lp = mix(vec3(sg*0.27, 0.84, 0.05), vec3(sg*0.30, 2.2, 0.12), r);
+    vec3 dn = mix(vec3(sg*0.27, 0.84, 0.05), vec3(sg*0.15, 1.0, 0.26), sitAt(w)); // by the hips, or resting on the lap
+    vec3 lp = mix(dn, vec3(sg*0.28, 1.93, 0.12), r);
     h = base + vec3(0.0, sink, 0.0) + rotY(lp, yaw);
     I = rotY(vec3(-sg, 0.0, 0.0), yaw);
     Uh = normalize(rotY(vec3(0.0, mix(-1.0, 1.0, r), 0.35*sin(r*3.14159) + 0.02), yaw));
@@ -393,33 +412,48 @@ void main(){
   vec3 base; float yaw; float e; float w; float sink;
   bodyFrame(base, yaw, e, w, sink);
   vec3 p = position; vec3 n = normal; vec3 wp; vec3 wn;
-  if(aPart < 1.5){
+  // parts: 0 body, 1 head, 2/3 upper arm L/R, 4/5 hand L/R, 6/7 forearm L/R, 8 thighs, 9 shins + shoes
+  if(aPart < 1.5 || aPart > 7.5){
     vec3 lp = p; vec3 ln = n;
-    if(aPart > 0.5){
+    if(aPart > 0.5 && aPart < 1.5){
       float nod = 0.07*sin(uTime*1.3 + iRand.y*20.0)*(0.3 + uMill) - w*0.12;
       lp.y -= 1.52; lp = rotX(lp, nod); lp.y += 1.52; ln = rotX(ln, nod);
+    } else if(aPart > 7.5){
+      // hip swings the thigh forward to horizontal; the shin follows the knee and stays upright
+      float a = -1.5707963*sitAt(w);
+      vec3 hip = vec3(0.0, 0.88, 0.0);
+      if(aPart < 8.5){ lp = hip + rotX(lp - hip, a); ln = rotX(ln, a); }
+      else { vec3 knee = hip + rotX(vec3(0.0, -0.43, 0.0), a); lp = lp - vec3(0.0, 0.45, 0.0) + knee; }
     }
     wp = base + vec3(0.0, sink, 0.0) + rotY(lp, yaw); wn = rotY(ln, yaw);
   } else {
-    bool left = (aPart < 2.5) || (aPart > 3.5 && aPart < 4.5);
+    bool left = (aPart < 2.5) || (aPart > 3.5 && aPart < 4.5) || (aPart > 5.5 && aPart < 6.5);
     vec3 h; vec3 I; vec3 Uh; vec3 F; float vis;
     handPose(left, base, yaw, e, w, sink, h, I, Uh, F, vis);
     vec4 hv = modelViewMatrix*vec4(h, 1.0);
     float near = smoothstep(40.0, 260.0, uCell.x*uPx/max(-hv.z, 0.001));
     float s = uHandScale*vis*mix(0.55, 1.0, near);
-    if(aPart > 3.5){
+    if(aPart > 3.5 && aPart < 5.5){
       wp = h + (I*p.x + Uh*p.y + F*p.z)*s;
       wn = I*n.x + Uh*n.y + F*n.z;
     } else {
       float sg = left ? -1.0 : 1.0;
-      vec3 sh = base + vec3(0.0, sink, 0.0) + rotY(vec3(sg*0.19, 1.40, 0.0), yaw);
+      vec3 sh = base + vec3(0.0, sink, 0.0) + rotY(vec3(sg*0.19, 1.39, 0.0), yaw);
       vec3 wr = h + (I*0.085 + Uh*(-0.012) + F*(-0.035))*s;
-      vec3 d = wr - sh; float L = max(length(d), 0.001); vec3 Y = d/L;
+      float Lu = 0.29; float Lf = 0.26;
+      vec3 el = elbowIK(sh, wr, rotY(vec3(sg*0.75, -0.7, -0.45), yaw), Lu, Lf);
+      bool upper = aPart < 3.5;
+      vec3 A = upper ? sh : el; vec3 B = upper ? el : wr;
+      vec3 d = B - A; float L = max(length(d), 0.001); vec3 Y = d/L;
+      // overlap the segments slightly at the elbow so the joint reads as one limb
+      if(upper) L += 0.03; else { A -= Y*0.03; L += 0.03; }
       vec3 ref = abs(Y.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
       vec3 X = normalize(cross(ref, Y)); vec3 Z = cross(X, Y);
-      float rad = 0.046*(1.0 - 0.2*p.y)*(uMode < 1.5 ? vis : 1.0);
-      wp = sh + X*(p.x*rad) + Y*(p.y*L) + Z*(p.z*rad);
-      wn = X*n.x + Z*n.z;
+      // upper arm: deltoid to elbow; forearm: muscular near the elbow, narrow at the wrist
+      float rad = upper ? mix(0.056, 0.041, p.y) : mix(0.043, 0.030, smoothstep(0.1, 1.0, p.y));
+      rad *= (uMode < 1.5 ? vis : 1.0);
+      wp = A + X*(p.x*rad) + Y*(p.y*L) + Z*(p.z*rad);
+      wn = X*n.x + Y*n.y + Z*n.z;
     }
   }
   wn = normalize(wn);
@@ -587,17 +621,42 @@ GeoB.prototype.build = function () {
 };
 const PERSON_GEO = (() => {
   const b = new GeoB();
-  b.box(-0.09, 0.43, 0, 0.13, 0.86, 0.15, 0, 2); b.box(0.09, 0.43, 0, 0.13, 0.86, 0.15, 0, 2);
-  b.box(-0.09, 0.04, 0.04, 0.14, 0.08, 0.25, 0, 2); b.box(0.09, 0.04, 0.04, 0.14, 0.08, 0.25, 0, 2);
-  b.cyl(0, 0, 0.84, 1.44, 0.17, 0.21, 8, 0, 0, true, 1, 0.62);
+  for (const sx of [-0.095, 0.095]) {
+    b.cyl(sx, 0, 0.45, 0.9, 0.062, 0.088, 7, 8, 2, true);             // thigh (hip to knee)
+    b.cyl(sx, 0, 0.07, 0.47, 0.045, 0.06, 7, 9, 2, true);             // shin
+    b.box(sx, 0.04, 0.045, 0.1, 0.08, 0.26, 9, 2);                    // shoe
+  }
+  b.cyl(0, 0, 0.82, 0.96, 0.17, 0.175, 8, 0, 2, true, 1, 0.66);      // hips / waistband
+  b.cyl(0, 0, 0.94, 1.44, 0.165, 0.21, 8, 0, 0, true, 1, 0.62);
+  for (const sx of [-0.18, 0.18]) b.sphere(sx, 1.385, 0, 0.066, 7, 5, 0, 0); // rounded shoulders
   b.cyl(0, 0, 1.42, 1.52, 0.05, 0.05, 6, 0, 1, false);
   b.sphere(0, 1.6, 0.0, 0.11, 8, 6, 1, 1);
   b.sphere(0, 1.61, -0.006, 0.117, 8, 3, 1, 3, Math.PI * 0.5);
-  b.cyl(0, 0, 0, 1, 1, 1, 6, 2, 4, false); b.cyl(0, 0, 0, 1, 1, 1, 6, 3, 4, false);
+  for (const part of [2, 3]) { b.cyl(0, 0, 0, 0.42, 1.08, 1.08, 7, part, 0, true); b.cyl(0, 0, 0.42, 1, 1, 1, 7, part, 1, true); } // upper arms: sleeve, then skin
+  b.cyl(0, 0, 0, 1, 1, 1, 7, 6, 1, true); b.cyl(0, 0, 0, 1, 1, 1, 7, 7, 1, true);   // forearms
   b.hand(4); b.hand(5);
   return b.build();
 })();
 const BOARD_GEO = new THREE.BoxGeometry(1, 1, 1);
+// tip-up stadium seat, relative to the fan's standing spot on the tread
+const SEAT_GEO = (() => {
+  const b = new GeoB();
+  b.box(0, 0.335, -0.19, 0.44, 0.05, 0.4, 0, 0);    // seat pan
+  b.box(0, 0.64, -0.39, 0.44, 0.5, 0.045, 0, 0);    // backrest
+  b.box(0, 0.16, -0.24, 0.07, 0.31, 0.2, 0, 0);     // pedestal
+  return b.build();
+})();
+const SEAT_VS = `
+uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround; uniform vec3 uSeatCol;
+attribute vec3 iSeat; varying vec3 vCol;
+void main(){
+  vec3 n = normalize(normal); float lam = max(dot(n, uLight), 0.0);
+  vec3 amb = mix(uGround, uSky, n.y*0.5 + 0.5);
+  vCol = uSeatCol*(amb*0.95 + lam*0.7);
+  gl_Position = projectionMatrix*modelViewMatrix*vec4(iSeat + position, 1.0);
+}`;
+const seatMat = new THREE.ShaderMaterial({ uniforms: { uLight: U.uLight, uSky: U.uSky, uGround: U.uGround, uSeatCol: { value: new THREE.Color(0x1d3f8f) } }, vertexShader: SEAT_VS, fragmentShader: PERSON_FS });
+const sitTarget = mode => settings.seated && mode !== 2 ? 1 : 0; // fans stand to carry a tifo
 
 /* ---------------- crowd state ---------------- */
 let C = null;               // current crowd
@@ -637,7 +696,7 @@ function buildCrowd(mode) {
   const cols = Math.max(4, Math.round(n / rows));
   const pitch = aspect * rows * rise / cols;
   const W = cols * pitch, H = rows * rise, N = rows * cols;
-  const yb = mode === 1 ? 1.2 : mode === 2 ? 2.0 : 1.05;
+  const yb = mode === 1 ? 1.2 : mode === 2 ? 2.0 : 1.05 - 0.44 * sitTarget(mode);
   const zFront = 1.0;
   const R = mulberry(1234 + N);
   const seat = new Float32Array(N * 3), rand = new Float32Array(N * 4), shirt = new Float32Array(N * 3), skin = new Float32Array(N * 3), cell = new Float32Array(N * 4);
@@ -661,7 +720,7 @@ function buildCrowd(mode) {
   }
   C = { mode, rows, cols, pitch, rise, run, W, H, N, yb, zFront, seat, rand, rowOf, chunks: [], HL: new Float32Array(N), HR: new Float32Array(N) };
   U.uMode.value = mode; U.uCell.value.set(pitch, rise); U.uZFront.value = zFront;
-  U.uHold.value = holdTarget[mode];
+  U.uHold.value = holdTarget[mode]; U.uSit.value = sitTarget(mode);
 
   // chunks (hybrid LOD: detailed meshes near camera, sprites far away)
   const CW = 32, CH = 24;
@@ -687,11 +746,16 @@ function buildCrowd(mode) {
     pg.setAttribute('iShirt', new THREE.BufferAttribute(shirtA, 3));
     pg.setAttribute('iSkin', new THREE.BufferAttribute(skinA, 3));
     const pts = new THREE.Points(pg, pointMat); pts.frustumCulled = false;
+    const sg = new THREE.InstancedBufferGeometry();
+    for (const k of ['position', 'normal']) sg.setAttribute(k, SEAT_GEO.attributes[k]);
+    sg.setAttribute('iSeat', new THREE.InstancedBufferAttribute(seatA, 3));
+    sg.instanceCount = idx.length;
+    const seats = new THREE.Mesh(sg, seatMat); seats.frustumCulled = false;
     const cx = ((c0 + c1 - 1) / 2 - (cols - 1) / 2) * pitch, rr = (r0 + r1 - 1) / 2;
     const center = new THREE.Vector3(cx, rr * rise + 1.3, -rr * run);
     const radius = Math.hypot((c1 - c0) * pitch / 2, (r1 - r0) * run / 2, (r1 - r0) * rise / 2) + 2.2;
-    group.add(mesh, pts);
-    C.chunks.push({ idx, mesh, pts, hAttr, sphere: new THREE.Sphere(center, radius) });
+    group.add(mesh, pts, seats);
+    C.chunks.push({ idx, mesh, pts, seats, hAttr, sphere: new THREE.Sphere(center, radius) });
   }
 
   if (mode === 1) {
@@ -808,9 +872,9 @@ function tifoHands(t) {
     let pump = 0.55 * Math.sin(t * (0.9 + ry * 1.1) + p1) + 0.3 * Math.sin(t * (0.35 + rw * 0.4) + p1 * 2.1) + 0.4 * Math.sin(t * 1.05 - x * 0.32 + r * 0.55);
     pump = 0.5 + 0.5 * clamp(pump, -1, 1);
     const pumpR = clamp(pump + 0.12 * Math.sin(t * 2.3 + p1), 0, 1);
-    const b0 = sy + sink + 1.62 + w * 0.18;
-    HL[i] = b0 + 0.62 * clamp(lift * (0.25 + 0.75 * pump) + w, 0, 1);
-    HR[i] = b0 + 0.62 * clamp(lift * (0.25 + 0.75 * pumpR) + w, 0, 1);
+    const b0 = sy + sink + 1.7 + w * 0.18;
+    HL[i] = b0 + 0.3 * clamp(lift * (0.25 + 0.75 * pump) + w, 0, 1);
+    HR[i] = b0 + 0.3 * clamp(lift * (0.25 + 0.75 * pumpR) + w, 0, 1);
     const rr = r - 0.07 / run;
     splat(x - 0.21, rr, HL[i] + 0.13); splat(x + 0.21, rr, HR[i] + 0.13);
   }
@@ -948,9 +1012,9 @@ function closeupView() {
   const { rows, cols, seat, rise, pitch, mode } = C;
   closeSeed = (closeSeed + 1) % 5;
   const c = clamp(Math.floor(cols / 2) + (closeSeed - 2) * 3, 0, cols - 1);
-  if (mode === 1) { const r = Math.min(2, rows - 1), i = r * cols + c; return { tx: seat[i * 3], ty: seat[i * 3 + 1] + 1.45, tz: seat[i * 3 + 2] + 0.3, th: -0.5, ph: 0.12, fov: 30, fh: rise * 3.4, ex: 0 }; }
+  if (mode === 1) { const r = Math.min(2, rows - 1), i = r * cols + c; return { tx: seat[i * 3], ty: seat[i * 3 + 1] + 1.45 - 0.44 * sitTarget(mode), tz: seat[i * 3 + 2] + 0.3, th: -0.5, ph: 0.12, fov: 30, fh: rise * 3.4, ex: 0 }; }
   if (mode === 2) { const i = c; return { tx: seat[i * 3], ty: 1.75, tz: 0.25, th: 0.38, ph: -0.12, fov: 36, fh: 2.4, ex: 0 }; }
-  const r = Math.min(1, rows - 1), i = r * cols + c; return { tx: seat[i * 3], ty: seat[i * 3 + 1] + 1.35, tz: seat[i * 3 + 2], th: -0.45, ph: 0.14, fov: 32, fh: 2.3, ex: 0 };
+  const r = Math.min(1, rows - 1), i = r * cols + c; return { tx: seat[i * 3], ty: seat[i * 3 + 1] + 1.3 - 0.5 * sitTarget(mode), tz: seat[i * 3 + 2], th: -0.45, ph: 0.14, fov: 32, fh: 2.3, ex: 0 };
 }
 function camTo(name, dur) {
   const to = views()[name]; activeView = name; syncViewSeg();
@@ -986,7 +1050,7 @@ function updateLOD() {
     const vis = frustum.intersectsSphere(ch.sphere);
     const d = Math.max(0.1, camera.position.distanceTo(ch.sphere.center) - ch.sphere.radius * 0.6);
     const det = 1.7 * pxScale / d > LOD_PX;
-    ch.mesh.visible = vis && det; ch.pts.visible = vis && !det; if (vis && det) detailed += ch.idx.length;
+    ch.mesh.visible = ch.seats.visible = vis && det; ch.pts.visible = vis && !det; if (vis && det) detailed += ch.idx.length;
   }
   return detailed;
 }
@@ -1028,6 +1092,7 @@ function step(dt) {
   if (state === 'intro') updateIntro(dt);
   U.uHold.value = damp(U.uHold.value, holdTarget[C.mode], 2.2, dt);
   U.uMill.value = damp(U.uMill.value, millOn ? settings.energy : 0, 1.3, dt);
+  U.uSit.value = damp(U.uSit.value, sitTarget(C.mode), 1.8, dt);
   U.uWaveW.value = settings.waveWidth;
   const lim = C.W / 2 + settings.waveWidth * 1.6;
   if (waveActive) {
@@ -1114,13 +1179,16 @@ glCanvas.addEventListener('pointerup', endPtr); glCanvas.addEventListener('point
 glCanvas.addEventListener('wheel', e => { if (!C) return; e.preventDefault(); userTakeover(); cam.fh = clamp(cam.fh * Math.exp(e.deltaY * 0.0012), 0.8, 800); }, { passive: false });
 
 /* ---------------- UI controls ---------------- */
-const btnHold = $('#btnHold'), btnWave = $('#btnWave'), btnMill = $('#btnMill'), btnWaveTop = $('#btnWaveTop');
+const btnHold = $('#btnHold'), btnWave = $('#btnWave'), btnMill = $('#btnMill'), btnWaveTop = $('#btnWaveTop'), btnSit = $('#btnSit');
 function syncControls() {
   const on = state === 'intro' || state === 'live';
-  for (const b of [btnHold, btnWave, btnMill, btnWaveTop, $('#btnReplay'), $('#btnLogout')]) b.disabled = !on;
+  for (const b of [btnHold, btnWave, btnMill, btnSit, btnWaveTop, $('#btnReplay'), $('#btnLogout')]) b.disabled = !on;
   $$('#viewSeg button').forEach(b => b.disabled = !on);
   const m = settings.mode;
   btnHold.textContent = HOLD_LABEL[m][holdTarget[m]];
+  btnSit.textContent = settings.seated ? 'Stand up' : 'Sit down';
+  if (m === 2) btnSit.disabled = true;
+  btnSit.title = m === 2 ? 'Fans stand to carry the tifo' : 'T';
   btnWave.setAttribute('aria-pressed', String(waveActive));
   btnMill.setAttribute('aria-pressed', String(millOn));
   for (const segId of ['#modeSeg', '#modeSeg2']) $$(segId + ' button').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.mode === m)));
@@ -1144,6 +1212,7 @@ function toggleWave() {
   syncControls();
 }
 function toggleMill() { millOn = !millOn; syncControls(); }
+function toggleSit() { if (settings.mode === 2) return; settings.seated = !settings.seated; syncControls(); }
 function setMode(m) {
   if (m === settings.mode) return;
   settings.mode = m; buildSettingsRows();
@@ -1159,7 +1228,7 @@ function scheduleRebuild() {
   rebuildT = setTimeout(() => { buildCrowd(settings.mode); startIntro(); toast(`Crowd rebuilt: ${C.N.toLocaleString()} fans`); }, 380);
 }
 
-btnHold.onclick = toggleHold; btnWave.onclick = toggleWave; btnWaveTop.onclick = toggleWave; btnMill.onclick = toggleMill;
+btnHold.onclick = toggleHold; btnWave.onclick = toggleWave; btnWaveTop.onclick = toggleWave; btnMill.onclick = toggleMill; btnSit.onclick = toggleSit;
 $('#btnReplay').onclick = replay; $('#btnLogout').onclick = logout;
 $$('#modeSeg button, #modeSeg2 button').forEach(b => b.onclick = () => setMode(+b.dataset.mode));
 $$('#viewSeg button').forEach(b => b.onclick = () => { if (C) camTo(b.dataset.view, b.dataset.view === 'perspective' && activeView === 'flat' ? 3 : 1.6); });
@@ -1183,7 +1252,7 @@ document.addEventListener('keydown', e => {
   if (k === 's') { toggleSettings(); return; }
   if (k === '1' || k === '2' || k === '3') { setMode(+k); return; }
   if (!(state === 'intro' || state === 'live')) return;
-  const map = { w: toggleWave, b: toggleHold, m: toggleMill, r: replay, f: () => camTo('flat', 1.8), p: () => camTo('perspective', activeView === 'flat' ? 3 : 1.6), g: () => camTo('pitchside', 1.6), c: () => camTo('closeup', 1.6) };
+  const map = { w: toggleWave, b: toggleHold, m: toggleMill, t: toggleSit, r: replay, f: () => camTo('flat', 1.8), p: () => camTo('perspective', activeView === 'flat' ? 3 : 1.6), g: () => camTo('pitchside', 1.6), c: () => camTo('closeup', 1.6) };
   if (map[k]) { e.preventDefault(); map[k](); }
 });
 
@@ -1247,10 +1316,10 @@ function setTheme(t) {
   theme = t; document.documentElement.dataset.theme = t;
   $('#btnTheme').innerHTML = t === 'dark' ? ICON_SUN : ICON_MOON;
   if (t === 'dark') {
-    renderer.setClearColor(0x07090d); standMat.color.set(0x30343c); roofMat.color.set(0x16181d); pitchMat.color.set(0x9aa39a);
+    renderer.setClearColor(0x07090d); standMat.color.set(0x30343c); seatMat.uniforms.uSeatCol.value.set(0x1a3a86); roofMat.color.set(0x16181d); pitchMat.color.set(0x9aa39a);
     hemi.intensity = 0.8; sun.intensity = 0.55; U.uSky.value.set(0.62, 0.64, 0.7); U.uGround.value.set(0.22, 0.22, 0.26);
   } else {
-    renderer.setClearColor(0xd6dde6); standMat.color.set(0x9ea4ad); roofMat.color.set(0x5d626b); pitchMat.color.set(0xffffff);
+    renderer.setClearColor(0xd6dde6); standMat.color.set(0x9ea4ad); seatMat.uniforms.uSeatCol.value.set(0x2451b3); roofMat.color.set(0x5d626b); pitchMat.color.set(0xffffff);
     hemi.intensity = 0.95; sun.intensity = 0.6; U.uSky.value.set(0.74, 0.74, 0.74); U.uGround.value.set(0.36, 0.35, 0.33);
   }
 }
