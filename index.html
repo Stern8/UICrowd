@@ -203,6 +203,7 @@ button{ font:inherit; color:inherit; }
       <button data-view="perspective" disabled title="P">Perspective</button>
       <button data-view="pitchside" disabled title="G">Pitchside</button>
       <button data-view="closeup" disabled title="C">Close-up</button>
+      <button data-view="touchline" disabled title="L">Touchline</button>
     </div>
     <button class="btn" id="btnLogout" disabled>Log out</button>
   </footer>
@@ -243,7 +244,7 @@ button{ font:inherit; color:inherit; }
       <h3>Shortcuts</h3>
       <ul>
         <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> switch display, <kbd>W</kbd> Mexican wave, <kbd>B</kbd> boards or banner up/down, <kbd>M</kbd> mill about, <kbd>T</kbd> sit down or stand up</li>
-        <li><kbd>F</kbd> flat, <kbd>P</kbd> perspective, <kbd>G</kbd> pitchside, <kbd>C</kbd> close-up on the hands, <kbd>R</kbd> replay, <kbd>S</kbd> settings</li>
+        <li><kbd>F</kbd> flat, <kbd>P</kbd> perspective, <kbd>G</kbd> pitchside, <kbd>C</kbd> close-up on the hands, <kbd>L</kbd> touchline, <kbd>R</kbd> replay, <kbd>S</kbd> settings</li>
         <li>Drag to orbit, scroll or pinch to zoom, shift-drag or right-drag to pan.</li>
       </ul>
     </div>
@@ -275,7 +276,7 @@ const settings = {
   count: { 1: 900, 2: 1500, 3: 20000 },
   handScale: 1.0, gap: 0.06,
   waveSpeed: 1.0, waveWidth: 3.2, tifoLift: 0.8, tifoDrift: 0.35, energy: 1.0,
-  autoReveal: true, fov: 42, volume: 0.8, sound: true, seated: true,
+  autoReveal: true, fov: 42, volume: 0.8, sound: true, seated: true, sunHeight: 0.45, grass: true,
 };
 const COUNT_RANGE = { 1: [100, 6000], 2: [300, 6000], 3: [2000, 80000] };
 const HAND_BASE = { 1: 1.35, 2: 1.35, 3: 1.15 };
@@ -328,13 +329,45 @@ const U = {
   uZFront: { value: 1.0 }, uLight: { value: new THREE.Vector3(0.35, 0.8, 0.5).normalize() },
   uSky: { value: new THREE.Vector3(0.62, 0.64, 0.7) }, uGround: { value: new THREE.Vector3(0.22, 0.22, 0.26) },
   uPx: { value: 500 }, uSit: { value: 1 },
+  uSunCol: { value: new THREE.Vector3(1.0, 0.94, 0.84) }, uCamPos: { value: new THREE.Vector3() }, uFogCol: { value: new THREE.Vector3(0.7, 0.76, 0.84) },
+  uRoofMin: { value: new THREE.Vector3(1e5, 1e5, 1e5) }, uRoofMax: { value: new THREE.Vector3(1e5, 1e5, 1e5) },
+  uTifo: { value: new THREE.Vector4(2, 1, 1, 1) }, uTifoOn: { value: 0 },
+  uFaces: { value: null }, uDetail: { value: 0 },
 };
 
-const GL_COMMON = `
+// Shared lighting: warm sun + sky ambient, with analytic shadows from the stand roof and the tifo
+// (both are simple shapes, so a ray test replaces a shadow map and works per vertex or per pixel).
+const LIGHT_GLSL = `
+uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround; uniform vec3 uSunCol;
+uniform vec3 uRoofMin; uniform vec3 uRoofMax; uniform vec4 uTifo; uniform float uTifoOn;
+float boxHit(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax){
+  vec3 inv = 1.0/rd; vec3 t0 = (bmin - ro)*inv; vec3 t1 = (bmax - ro)*inv;
+  vec3 tn3 = min(t0, t1); vec3 tf3 = max(t0, t1);
+  float tn = max(max(tn3.x, tn3.y), tn3.z); float tf = min(min(tf3.x, tf3.y), tf3.z);
+  return tf > max(tn, 0.0) ? 1.0 : 0.0;
+}
+float tifoHit(vec3 p, vec3 d){
+  if(uTifoOn < 0.01) return 0.0;
+  vec3 o = vec3(0.0, uTifo.x, 0.07); vec3 a = vec3(0.0, uTifo.y, -uTifo.z); vec3 n = vec3(0.0, uTifo.z, uTifo.y);
+  float dn = dot(d, n); if(abs(dn) < 1e-5) return 0.0;
+  float t = dot(o - p, n)/dn; if(t <= 0.02) return 0.0;
+  vec3 h = p + d*t; float v = dot(h - o, a)/dot(a, a);
+  return (abs(h.x) <= uTifo.w && v >= 0.0 && v <= 1.0) ? uTifoOn : 0.0;
+}
+float sunVis(vec3 p){ return (1.0 - boxHit(p, uLight, uRoofMin, uRoofMax))*(1.0 - tifoHit(p, uLight)); }
+vec3 lightAt(vec3 p, vec3 n){
+  float lam = max(dot(n, uLight), 0.0);
+  float skyOcc = 1.0 - 0.62*tifoHit(p, vec3(0.0, 1.0, 0.0));
+  vec3 amb = mix(uGround, uSky, n.y*0.5 + 0.5)*skyOcc;
+  return amb*0.9 + uSunCol*lam*sunVis(p);
+}
+`;
+
+const GL_COMMON = LIGHT_GLSL + `
 uniform float uTime; uniform float uMode; uniform float uAssemble; uniform float uHold;
 uniform float uWaveX; uniform float uWaveW; uniform float uWaveOn; uniform float uMill;
 uniform float uHandScale; uniform vec2 uCell; uniform float uGap; uniform float uZFront;
-uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround; uniform float uPx; uniform float uSit;
+uniform float uPx; uniform float uSit;
 attribute vec3 iSeat; attribute vec4 iRand; attribute vec3 iShirt; attribute vec3 iSkin; attribute vec2 iHands;
 vec3 rotY(vec3 p, float a){ float c = cos(a); float s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
 vec3 rotX(vec3 p, float a){ float c = cos(a); float s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
@@ -390,7 +423,8 @@ void handPose(bool left, vec3 base, float yaw, float e, float w, float sink, out
   } else if(uMode < 2.5){
     vec3 lp = rotY(vec3(sg*0.21, 0.0, 0.07), yaw);
     h = vec3(base.x + lp.x, (left ? iHands.x : iHands.y), base.z + lp.z);
-    I = rotY(vec3(-sg, 0.0, 0.0), yaw); Uh = rotY(vec3(0.0, 0.0, -1.0), yaw); F = vec3(0.0, 1.0, 0.0);
+    // palms up under the fabric, fingers forward, wrist behind and below the hand
+    I = rotY(vec3(0.0, 0.0, -1.0), yaw); Uh = rotY(vec3(sg, 0.0, 0.0), yaw); F = vec3(0.0, 1.0, 0.0);
     vis = 1.0;
   } else {
     float r = clamp(uHold + w*1.3, 0.0, 1.0);
@@ -406,16 +440,26 @@ void handPose(bool left, vec3 base, float yaw, float e, float w, float sink, out
 `;
 
 const PERSON_VS = GL_COMMON + `
-attribute float aPart; attribute float aMat;
-varying vec3 vCol;
+attribute float aPart; attribute float aMat; attribute vec2 aUv; attribute float aFace;
+varying vec3 vCol; varying vec3 vLit; varying vec2 vUv; varying float vFace; varying float vFaceId;
+const vec3 HAIR0 = vec3(0.05, 0.04, 0.035); const vec3 HAIR1 = vec3(0.16, 0.10, 0.06); const vec3 HAIR2 = vec3(0.33, 0.22, 0.12);
+const vec3 HAIR3 = vec3(0.62, 0.49, 0.30); const vec3 HAIR4 = vec3(0.45, 0.20, 0.08); const vec3 HAIR5 = vec3(0.52, 0.51, 0.50);
+vec3 hairColor(float h){ return h < 0.3 ? HAIR0 : h < 0.55 ? HAIR1 : h < 0.72 ? HAIR2 : h < 0.84 ? HAIR3 : h < 0.92 ? HAIR4 : HAIR5; }
 void main(){
   vec3 base; float yaw; float e; float w; float sink;
   bodyFrame(base, yaw, e, w, sink);
   vec3 p = position; vec3 n = normal; vec3 wp; vec3 wn;
+  float style = fract(iRand.z*31.7);          // < .1 bald crown, < .24 team beanie, else hair
+  float ao = 1.0;
   // parts: 0 body, 1 head, 2/3 upper arm L/R, 4/5 hand L/R, 6/7 forearm L/R, 8 thighs, 9 shins + shoes
   if(aPart < 1.5 || aPart > 7.5){
     vec3 lp = p; vec3 ln = n;
     if(aPart > 0.5 && aPart < 1.5){
+      if(aMat > 2.5 && aMat < 3.5){
+        vec3 rel = lp - vec3(0.0, 1.6, 0.0);
+        if(style < 0.1) lp = vec3(0.0, 1.6, 0.0) + rel*(rel.y > 0.02 ? 0.93 : 1.0);
+        else if(style < 0.24) lp = vec3(0.0, 1.6, 0.0) + rel*vec3(1.05, 1.1, 1.05);
+      }
       float nod = 0.07*sin(uTime*1.3 + iRand.y*20.0)*(0.3 + uMill) - w*0.12;
       lp.y -= 1.52; lp = rotX(lp, nod); lp.y += 1.52; ln = rotX(ln, nod);
     } else if(aPart > 7.5){
@@ -425,6 +469,7 @@ void main(){
       if(aPart < 8.5){ lp = hip + rotX(lp - hip, a); ln = rotX(ln, a); }
       else { vec3 knee = hip + rotX(vec3(0.0, -0.43, 0.0), a); lp = lp - vec3(0.0, 0.45, 0.0) + knee; }
     }
+    if(aPart < 0.5 || aPart > 7.5) ao = mix(0.5, 1.0, smoothstep(0.05, 1.25, p.y + 0.35*sitAt(w)*step(7.5, aPart)));
     wp = base + vec3(0.0, sink, 0.0) + rotY(lp, yaw); wn = rotY(ln, yaw);
   } else {
     bool left = (aPart < 2.5) || (aPart > 3.5 && aPart < 4.5) || (aPart > 5.5 && aPart < 6.5);
@@ -441,7 +486,10 @@ void main(){
       vec3 sh = base + vec3(0.0, sink, 0.0) + rotY(vec3(sg*0.19, 1.39, 0.0), yaw);
       vec3 wr = h + (I*0.085 + Uh*(-0.012) + F*(-0.035))*s;
       float Lu = 0.29; float Lf = 0.26;
-      vec3 el = elbowIK(sh, wr, rotY(vec3(sg*0.75, -0.7, -0.45), yaw), Lu, Lf);
+      // elbows hang down and out; with hands overhead they swing forward and only slightly out
+      float raised = smoothstep(0.0, 0.3, wr.y - sh.y);
+      vec3 pole = mix(vec3(sg*0.75, -0.7, -0.45), vec3(sg*0.3, -0.15, 0.9), raised);
+      vec3 el = elbowIK(sh, wr, rotY(pole, yaw), Lu, Lf);
       bool upper = aPart < 3.5;
       vec3 A = upper ? sh : el; vec3 B = upper ? el : wr;
       vec3 d = B - A; float L = max(length(d), 0.001); vec3 Y = d/L;
@@ -450,7 +498,9 @@ void main(){
       vec3 ref = abs(Y.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
       vec3 X = normalize(cross(ref, Y)); vec3 Z = cross(X, Y);
       // upper arm: deltoid to elbow; forearm: muscular near the elbow, narrow at the wrist
-      float rad = upper ? mix(0.056, 0.041, p.y) : mix(0.043, 0.030, smoothstep(0.1, 1.0, p.y));
+      float q = clamp(p.y, 0.0, 1.0);
+      float rad = upper ? mix(0.056, 0.041, q) + 0.007*sin(3.14159*q)*(0.6 + 0.4*iRand.x)
+                        : mix(0.043, 0.030, smoothstep(0.1, 1.0, q)) + 0.006*exp(-pow((q - 0.25)/0.18, 2.0));
       rad *= (uMode < 1.5 ? vis : 1.0);
       wp = A + X*(p.x*rad) + Y*(p.y*L) + Z*(p.z*rad);
       wn = X*n.x + Y*n.y + Z*n.z;
@@ -461,15 +511,33 @@ void main(){
   if(aMat < 0.5) col = iShirt;
   else if(aMat < 1.5) col = iSkin;
   else if(aMat < 2.5) col = vec3(0.12, 0.13, 0.16)*(0.75 + iRand.w*0.5);
-  else if(aMat < 3.5) col = uMode > 2.5 ? iShirt : vec3(0.09, 0.07, 0.05)*(0.6 + iRand.z*1.4);
+  else if(aMat < 3.5){
+    vec3 beanie = fract(iRand.x*11.3) < 0.6 ? vec3(0.05, 0.17, 0.44) : vec3(0.9, 0.91, 0.93);
+    col = uMode > 2.5 ? iShirt : style < 0.1 ? iSkin*0.92 : style < 0.24 ? beanie : hairColor(fract(iRand.z*7.3))*(0.85 + iRand.w*0.3);
+  }
   else col = p.y < 0.45 ? iShirt : iSkin;
-  float lam = max(dot(wn, uLight), 0.0);
-  vec3 amb = mix(uGround, uSky, wn.y*0.5 + 0.5);
   float k = uMode > 2.5 ? 0.5 : 1.0;
-  vCol = col*mix(vec3(1.0), amb + vec3(lam*0.8), k);
+  vLit = mix(vec3(1.0), lightAt(wp, wn)*ao, k);
+  vCol = col*vLit;
+  // texture-mapped face: 8 identities x (mouth closed, shouting); fans shout now and then, and all shout in the wave
+  float shout = step(0.62, sin(uTime*(0.5 + iRand.w*0.9) + iRand.y*40.0)) + step(0.3, w);
+  vFaceId = floor(fract(iRand.y*13.7)*8.0) + (shout > 0.5 ? 8.0 : 0.0);
+  vUv = aUv; vFace = aFace;
   gl_Position = projectionMatrix*modelViewMatrix*vec4(wp, 1.0);
 }`;
-const PERSON_FS = `varying vec3 vCol; void main(){ gl_FragColor = vec4(vCol, 1.0); }`;
+const PERSON_FS = `
+uniform sampler2D uFaces;
+varying vec3 vCol; varying vec3 vLit; varying vec2 vUv; varying float vFace; varying float vFaceId;
+void main(){
+  vec3 col = vCol;
+  if(vFace > 0.01){
+    vec2 cell = vec2(mod(vFaceId, 4.0), floor(vFaceId/4.0));
+    vec4 t = texture2D(uFaces, (cell + clamp(vUv, 0.0, 1.0))/4.0);
+    col = mix(col, t.rgb*vLit, t.a*vFace);
+  }
+  gl_FragColor = vec4(col, 1.0);
+}`;
+const SIMPLE_FS = `varying vec3 vCol; void main(){ gl_FragColor = vec4(vCol, 1.0); }`;
 
 const POINT_VS = GL_COMMON + `
 varying vec3 vShirt; varying vec3 vSkin; varying float vCap;
@@ -480,7 +548,8 @@ void main(){
   vec4 mv = modelViewMatrix*vec4(c, 1.0);
   gl_Position = projectionMatrix*mv;
   gl_PointSize = clamp(uCell.x*1.08*uPx/max(-mv.z, 0.001), 1.0, 256.0);
-  vShirt = iShirt*(uMode > 2.5 ? 1.0 : 0.85); vSkin = iSkin*0.9; vCap = uMode > 2.5 ? 1.0 : 0.0;
+  vec3 lit = mix(vec3(1.0), lightAt(c, normalize(vec3(0.0, 0.35, 1.0)))*0.92, uMode > 2.5 ? 0.5 : 1.0);
+  vShirt = iShirt*lit; vSkin = iSkin*lit; vCap = uMode > 2.5 ? 1.0 : 0.0;
 }`;
 const POINT_FS = `
 varying vec3 vShirt; varying vec3 vSkin; varying float vCap;
@@ -510,7 +579,7 @@ void main(){
   vUv = vec2(mix(iCell.x, iCell.z, p.x + 0.5), mix(iCell.y, iCell.w, p.y + 0.5));
   vFront = normal.z > 0.5 ? 1.0 : 0.0;
   float lam = max(dot(wn, uLight), 0.0);
-  vShade = mix(1.0, 0.78 + 0.32*lam, e);
+  vShade = mix(1.0, (0.74 + 0.34*lam)*mix(0.74, 1.0, sunVis(wp)), e);
   gl_Position = projectionMatrix*modelViewMatrix*vec4(wp, 1.0);
 }`;
 const BOARD_FS = `
@@ -521,16 +590,17 @@ void main(){
   gl_FragColor = vec4(col*vShade, 1.0);
 }`;
 
-const CLOTH_VS = `varying vec2 vUv; varying vec3 vN; void main(){ vUv = uv; vN = normal; gl_Position = projectionMatrix*modelViewMatrix*vec4(position, 1.0); }`;
-const CLOTH_FS = `
-uniform sampler2D uTex; uniform float uShade; uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround;
-varying vec2 vUv; varying vec3 vN;
+const CLOTH_VS = `varying vec2 vUv; varying vec3 vN; varying vec3 vW; void main(){ vUv = uv; vN = normal; vW = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position, 1.0); }`;
+const CLOTH_FS = LIGHT_GLSL + `
+uniform sampler2D uTex; uniform float uShade;
+varying vec2 vUv; varying vec3 vN; varying vec3 vW;
 void main(){
   vec3 n = normalize(vN); vec3 col = texture2D(uTex, vUv).rgb;
   if(!gl_FrontFacing){ n = -n; col = mix(col, vec3(0.07), 0.62); }
   float lam = max(dot(n, uLight), 0.0);
   vec3 amb = mix(uGround, uSky, n.y*0.5 + 0.5);
-  vec3 lit = col*(amb*0.95 + lam*0.72);
+  float vis = 1.0 - boxHit(vW, uLight, uRoofMin, uRoofMax);
+  vec3 lit = col*(amb*0.9 + uSunCol*lam*0.8*vis);
   gl_FragColor = vec4(mix(col, lit, uShade), 1.0);
 }`;
 
@@ -552,20 +622,157 @@ const personMat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: PERSON_V
 const pointMat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: POINT_VS, fragmentShader: POINT_FS });
 const boardU = Object.assign({}, U, { uTex: { value: null } });
 const boardMat = new THREE.ShaderMaterial({ uniforms: boardU, vertexShader: BOARD_VS, fragmentShader: BOARD_FS });
-const clothMat = new THREE.ShaderMaterial({ uniforms: { uTex: { value: null }, uShade: { value: 0 }, uLight: U.uLight, uSky: U.uSky, uGround: U.uGround }, vertexShader: CLOTH_VS, fragmentShader: CLOTH_FS, side: THREE.DoubleSide });
+const LU = { uLight: U.uLight, uSky: U.uSky, uGround: U.uGround, uSunCol: U.uSunCol, uRoofMin: U.uRoofMin, uRoofMax: U.uRoofMax, uTifo: U.uTifo, uTifoOn: U.uTifoOn };
+const clothMat = new THREE.ShaderMaterial({ uniforms: { ...LU, uTifoOn: { value: 0 }, uTex: { value: null }, uShade: { value: 0 } }, vertexShader: CLOTH_VS, fragmentShader: CLOTH_FS, side: THREE.DoubleSide });
 const flatMat = new THREE.ShaderMaterial({ uniforms: { uTex: { value: null }, uLow: { value: null }, uDis: { value: 0 }, uGrid: { value: new THREE.Vector2(1, 1) } }, vertexShader: FLAT_VS, fragmentShader: FLAT_FS });
-const standMat = new THREE.MeshLambertMaterial({ color: 0x33373f, side: THREE.DoubleSide });
 const roofMat = new THREE.MeshLambertMaterial({ color: 0x1b1d22, side: THREE.DoubleSide });
 const stripMat = new THREE.MeshBasicMaterial({ color: 0xfff4e0 });
-const pitchTex = (() => { const c = document.createElement('canvas'); c.width = 64; c.height = 512; const g = c.getContext('2d'); for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#2f7a36' : '#357f3b'; g.fillRect(0, i * 64, 64, 64); } const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; })();
-const pitchMat = new THREE.MeshLambertMaterial({ map: pitchTex });
+
+/* ---------------- stadium surfaces: concrete terrace, turf, grass blades, sky ---------------- */
+const WORLD_VS = `varying vec3 vW; varying vec3 vN; void main(){ vec4 w = modelMatrix*vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix)*normal); gl_Position = projectionMatrix*viewMatrix*w; }`;
+const NOISE_GLSL = `
+float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0 - 2.0*f);
+  return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y); }
+float fbm(vec2 p){ float a = 0.5; float s = 0.0; for(int i = 0; i < 4; i++){ s += a*vnoise(p); p *= 2.03; a *= 0.5; } return s; }
+`;
+const STAND_FS = LIGHT_GLSL + NOISE_GLSL + `
+uniform vec3 uCol; uniform float uRun; uniform float uRise; uniform vec3 uCamPos; uniform vec3 uFogCol;
+varying vec3 vW; varying vec3 vN;
+void main(){
+  vec3 n = normalize(vN);
+  float ao = 1.0;
+  if(n.y > 0.5){ float f = fract((uRun*0.5 - vW.z)/uRun); ao = mix(1.0, 0.55, smoothstep(0.62, 1.0, f)); }   // tread darkens under the seats and into the riser
+  else if(n.z > 0.5){ float f = fract(vW.y/uRise + 1e-3); ao = mix(0.62, 1.0, smoothstep(0.0, 0.45, f)); }
+  vec3 c = uCol*(0.9 + 0.2*fbm(vW.xz*2.5 + vW.y))*ao;
+  c *= lightAt(vW + n*0.02, n);
+  c = mix(c, uFogCol, 1.0 - exp(-distance(uCamPos, vW)*0.0035));
+  gl_FragColor = vec4(c, 1.0);
+}`;
+const standMat = new THREE.ShaderMaterial({ uniforms: { ...LU, uCol: { value: new THREE.Color(0x33373f) }, uRun: { value: 0.85 }, uRise: { value: 0.5 }, uCamPos: U.uCamPos, uFogCol: U.uFogCol }, vertexShader: WORLD_VS, fragmentShader: STAND_FS, side: THREE.DoubleSide });
+
+// Turf: a 105 x 68 m pitch along the stand. Mowing bands flip light/dark with view direction (the grain), plus noise and markings.
+const GRASS_GLSL = NOISE_GLSL + `
+uniform vec3 uCamPos; uniform float uZ0; uniform vec3 uTurfA; uniform vec3 uTurfB;
+vec3 grassCol(vec2 xz){
+  float band = mod(floor((xz.x + 52.5)/5.25), 2.0)*2.0 - 1.0;
+  vec2 v = normalize(uCamPos.xz - xz + vec2(1e-4));
+  float sheen = band*v.x;
+  vec3 c = mix(uTurfA, uTurfB, clamp(0.5 + 0.38*sheen + 0.1*band, 0.0, 1.0));
+  c *= 0.84 + 0.3*fbm(xz*0.3);
+  c = mix(c, c*vec3(1.15, 1.07, 0.78), smoothstep(0.55, 0.85, fbm(xz*2.7 + 7.0))*0.45);
+  vec2 q = vec2(abs(xz.x), xz.y - (uZ0 + 34.0));
+  float wear = exp(-pow((q.x - 50.0)/4.0, 2.0) - pow(q.y/5.0, 2.0)) + 0.6*exp(-pow(q.x/5.0, 2.0) - pow(q.y/6.0, 2.0));
+  c = mix(c, vec3(0.36, 0.33, 0.22), clamp(wear*0.55*fbm(xz*4.0), 0.0, 0.6));
+  return c;
+}
+float segD(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a; vec2 ba = b - a; float h = clamp(dot(pa, ba)/dot(ba, ba), 0.0, 1.0); return length(pa - ba*h); }
+float lineDist(vec2 xz){
+  vec2 q = vec2(xz.x, xz.y - (uZ0 + 34.0)); vec2 a = abs(q);
+  const float L = 52.5; const float H = 34.0;
+  float d = min(segD(a, vec2(0.0, H), vec2(L, H)), segD(a, vec2(L, 0.0), vec2(L, H)));   // touchlines, goal lines
+  d = min(d, segD(a, vec2(0.0, 0.0), vec2(0.0, H)));                                        // halfway line
+  d = min(d, abs(length(q) - 9.15)); d = min(d, max(length(q) - 0.05, 0.0));                // centre circle, spot
+  d = min(d, min(segD(a, vec2(L - 16.5, 0.0), vec2(L - 16.5, 20.16)), segD(a, vec2(L - 16.5, 20.16), vec2(L, 20.16))));  // penalty area
+  d = min(d, min(segD(a, vec2(L - 5.5, 0.0), vec2(L - 5.5, 9.16)), segD(a, vec2(L - 5.5, 9.16), vec2(L, 9.16))));        // goal area
+  vec2 ps = a - vec2(L - 11.0, 0.0); d = min(d, max(length(ps) - 0.05, 0.0));
+  if(a.x < L - 16.5) d = min(d, abs(length(ps) - 9.15));                                    // penalty arc
+  vec2 cq = a - vec2(L, H); if(a.x < L && a.y < H) d = min(d, abs(length(cq) - 1.0));        // corner arcs
+  return d;
+}
+`;
+const PITCH_FS = LIGHT_GLSL + GRASS_GLSL + `
+uniform vec3 uFogCol; varying vec3 vW; varying vec3 vN;
+void main(){
+  vec2 xz = vW.xz; vec3 c = grassCol(xz);
+  float dist = distance(uCamPos, vW);
+  c *= 0.93 + 0.14*h21(floor(xz*70.0))*(1.0 - smoothstep(8.0, 40.0, dist));   // blade-scale speckle up close
+  float d = lineDist(xz); float aa = fwidth(d) + 0.004;
+  c = mix(c, vec3(0.9, 0.92, 0.88), (1.0 - smoothstep(0.06 - aa, 0.06 + aa, d))*0.92);
+  c *= lightAt(vW + vec3(0.0, 0.02, 0.0), vec3(0.0, 1.0, 0.0));
+  c = mix(c, uFogCol, 1.0 - exp(-dist*0.0035));
+  gl_FragColor = vec4(c, 1.0);
+}`;
+const TURF = { uZ0: { value: 6 }, uTurfA: { value: new THREE.Vector3(0.12, 0.3, 0.08) }, uTurfB: { value: new THREE.Vector3(0.22, 0.45, 0.13) }, uCamPos: U.uCamPos, uFogCol: U.uFogCol };
+const pitchMat = new THREE.ShaderMaterial({ uniforms: { ...LU, ...TURF }, vertexShader: WORLD_VS, fragmentShader: PITCH_FS, extensions: { derivatives: true } });
+
+// Instanced grass blades in a tile that wraps around the camera: blades keep fixed world positions as the tile follows.
+const GRASS_VS = LIGHT_GLSL + GRASS_GLSL + `
+uniform vec2 uFocus; uniform float uTile; uniform float uTime; uniform float uFade; uniform float uGroundY; uniform float uZmin; uniform vec3 uFogCol;
+attribute vec4 iBlade; varying vec3 vCol;
+void main(){
+  vec2 xz = iBlade.xy + uTile*floor((uFocus - iBlade.xy)/uTile + 0.5);
+  float r = iBlade.z; float r2 = iBlade.w;
+  float fade = 1.0 - smoothstep(uFade*0.55, uFade, distance(uCamPos.xz, xz));
+  float h = (0.035 + 0.055*r*r)*fade*step(uZmin, xz.y);
+  float ang = r2*6.2831853; vec2 side = vec2(cos(ang), sin(ang)); vec2 lean = vec2(-side.y, side.x)*(0.15 + 0.55*r2);
+  float wind = 0.3*sin(uTime*1.5 + xz.x*0.45 + xz.y*0.2) + 0.12*sin(uTime*3.3 + xz.x*1.9 + xz.y*1.3);
+  float t = position.y; vec2 bend = (lean + vec2(0.55, 0.25)*wind)*h*t*t;
+  float wdt = 0.0032*(1.0 - 0.92*t)*(0.8 + 0.5*r2);
+  vec3 p = vec3(xz.x + side.x*position.x*wdt + bend.x, uGroundY + t*h*(1.0 - 0.25*dot(lean, lean)), xz.y + side.y*position.x*wdt + bend.y);
+  vec3 c = grassCol(xz);
+  c = mix(c, vec3(0.88, 0.9, 0.86), (1.0 - step(0.065, lineDist(xz)))*0.9);
+  c *= mix(0.5, 1.2, t)*(0.88 + 0.24*r2);
+  vec3 nrm = normalize(vec3(-side.y*0.5, 1.0, side.x*0.5));
+  vec3 lit = lightAt(p, nrm) + uSunCol*0.25*t*max(dot(normalize(p - uCamPos), uLight), 0.0);   // light through backlit blade tips
+  vCol = mix(c*lit, uFogCol, 1.0 - exp(-distance(uCamPos, p)*0.0035));
+  gl_Position = projectionMatrix*viewMatrix*vec4(p, 1.0);
+}`;
+const GRASS = { N: 160000, tile: 16 };
+const grassU = { ...LU, ...TURF, uFocus: { value: new THREE.Vector2() }, uTile: { value: GRASS.tile }, uTime: U.uTime, uFade: { value: GRASS.tile * 0.46 }, uGroundY: { value: -1.0 }, uZmin: { value: 0.6 } };
+const grassMesh = (() => {
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-1, 0, 0, 1, 0, 0, -1, 0.4, 0, 1, 0.4, 0, -1, 0.75, 0, 1, 0.75, 0, 0, 1, 0], 3));
+  g.setIndex([0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4, 4, 5, 6]);
+  const R = mulberry(4242), a = new Float32Array(GRASS.N * 4);
+  for (let i = 0; i < GRASS.N; i++) { a[i * 4] = R() * GRASS.tile; a[i * 4 + 1] = R() * GRASS.tile; a[i * 4 + 2] = R(); a[i * 4 + 3] = R(); }
+  g.setAttribute('iBlade', new THREE.InstancedBufferAttribute(a, 4)); g.instanceCount = GRASS.N;
+  const m = new THREE.Mesh(g, new THREE.ShaderMaterial({ uniforms: grassU, vertexShader: GRASS_VS, fragmentShader: SIMPLE_FS, side: THREE.DoubleSide }));
+  m.frustumCulled = false; m.visible = false; scene.add(m); return m;
+})();
+
+// Sky dome that follows the camera: horizon haze, zenith blue, sun glow (floodlit night sky in dark mode)
+const skyU = { uLight: U.uLight, uSunCol: U.uSunCol, uZen: { value: new THREE.Vector3(0.24, 0.45, 0.78) }, uHor: U.uFogCol, uGlow: { value: 1 } };
+const skyMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), new THREE.ShaderMaterial({
+  uniforms: skyU, side: THREE.BackSide, depthWrite: false, depthTest: false,
+  vertexShader: `varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position, 1.0); }`,
+  fragmentShader: `uniform vec3 uLight; uniform vec3 uSunCol; uniform vec3 uZen; uniform vec3 uHor; uniform float uGlow; varying vec3 vD;
+  void main(){ vec3 d = normalize(vD); float h = d.y;
+    vec3 c = mix(uHor, uZen, pow(clamp(h, 0.0, 1.0), 0.55)); c = mix(c, uHor*0.85, smoothstep(0.0, -0.2, h));
+    float s = max(dot(d, uLight), 0.0); c += uSunCol*uGlow*(pow(s, 900.0)*3.0 + pow(s, 12.0)*0.22);
+    gl_FragColor = vec4(c, 1.0); }`,
+}));
+skyMesh.renderOrder = -10; skyMesh.frustumCulled = false; scene.add(skyMesh);
+
+// pitchside LED advertising boards
+const hoardTex = (() => {
+  const c = document.createElement('canvas'); c.width = 2048; c.height = 64; const g = c.getContext('2d');
+  g.fillStyle = '#0b0d12'; g.fillRect(0, 0, 2048, 64);
+  const words = ['CROWDSIGN', 'MEXICAN WAVE', 'CARDS UP', 'TIFO', 'CROWDSIGN'];
+  g.font = '700 38px Inter, system-ui, sans-serif'; g.textBaseline = 'middle';
+  let x = 30; for (let i = 0; i < 10; i++) { const w = words[i % words.length]; g.fillStyle = i % 2 ? '#ffffff' : '#ff6420'; g.fillText(w, x, 33); x += g.measureText(w).width + 70; }
+  const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; t.anisotropy = 4; return t;
+})();
+const hoardMat = new THREE.MeshBasicMaterial({ map: hoardTex });
 
 /* ---------------- base geometries ---------------- */
-function GeoB() { this.p = []; this.n = []; this.part = []; this.mat = []; }
-GeoB.prototype.v = function (x, y, z, nx, ny, nz, part, mat) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.part.push(part); this.mat.push(mat); };
+const V3 = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+function GeoB() { this.p = []; this.n = []; this.part = []; this.mat = []; this.uv = []; this.face = []; }
+GeoB.prototype.v = function (x, y, z, nx, ny, nz, part, mat, u = 0, w = 0, f = 0) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.part.push(part); this.mat.push(mat); this.uv.push(u, w); this.face.push(f); };
 GeoB.prototype.quad = function (a, b, c, d, na, nb, nc, nd, part, mat) {
   const V = (q, n) => this.v(q[0], q[1], q[2], n[0], n[1], n[2], part, mat);
   V(a, na); V(b, nb); V(c, nc); V(a, na); V(c, nc); V(d, nd);
+};
+GeoB.prototype.tri = function (a, b, c, out, part, mat) {
+  let n = V3.norm(V3.cross(V3.sub(b, a), V3.sub(c, a)));
+  if (V3.dot(n, V3.sub(a, out)) < 0) n = n.map(x => -x);
+  for (const q of [a, b, c]) this.v(q[0], q[1], q[2], n[0], n[1], n[2], part, mat);
 };
 GeoB.prototype.box = function (cx, cy, cz, sx, sy, sz, part, mat) {
   const x0 = cx - sx / 2, x1 = cx + sx / 2, y0 = cy - sy / 2, y1 = cy + sy / 2, z0 = cz - sz / 2, z1 = cz + sz / 2;
@@ -586,23 +793,89 @@ GeoB.prototype.cyl = function (cx, cz, y0, y1, r0, r1, seg, part, mat, caps, sx 
     const n0 = [c0, 0, s0], n1 = [c1, 0, s1];
     this.quad(A, B, C, D, n0, n1, n1, n0, part, mat);
     if (caps) {
-      const up = [0, 1, 0], dn = [0, -1, 0];
       this.v(cx, y1, cz, 0, 1, 0, part, mat); this.v(D[0], D[1], D[2], 0, 1, 0, part, mat); this.v(C[0], C[1], C[2], 0, 1, 0, part, mat);
       this.v(cx, y0, cz, 0, -1, 0, part, mat); this.v(B[0], B[1], B[2], 0, -1, 0, part, mat); this.v(A[0], A[1], A[2], 0, -1, 0, part, mat);
     }
   }
 };
-GeoB.prototype.sphere = function (cx, cy, cz, r, seg, rings, part, mat, thMax = Math.PI) {
-  const P = (th, ph) => [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)];
-  for (let i = 0; i < rings; i++) {
-    const t0 = i / rings * thMax, t1 = (i + 1) / rings * thMax;
-    for (let j = 0; j < seg; j++) {
-      const p0 = j / seg * Math.PI * 2, p1 = (j + 1) / seg * Math.PI * 2;
-      const a = P(t0, p0), b = P(t0, p1), c = P(t1, p1), d = P(t1, p0);
-      const S = q => [cx + q[0] * r, cy + q[1] * r, cz + q[2] * r];
-      this.quad(S(a), S(b), S(c), S(d), a, b, c, d, part, mat);
-    }
+// parametric surface F(u, v) -> point, with normals by finite differences; `hint` gives an interior point for orientation
+GeoB.prototype.surf = function (rows, cols, F, hint, part, mat, extra) {
+  const e = 1e-3, V = [];
+  for (let i = 0; i <= rows; i++) for (let j = 0; j <= cols; j++) {
+    const u = j / cols, v = i / rows, p = F(u, v);
+    let n = V3.cross(V3.sub(F(u + e, v), F(u - e, v)), V3.sub(F(u, Math.min(1, v + e)), F(u, Math.max(0, v - e))));
+    const out = V3.sub(p, hint(p));
+    if (Math.hypot(n[0], n[1], n[2]) < 1e-12) n = out;
+    n = V3.norm(n); if (V3.dot(n, out) < 0) n = n.map(x => -x);
+    V.push([p, n, extra ? extra(u, v, p) : null]);
   }
+  const W = cols + 1;
+  const put = q => this.v(q[0][0], q[0][1], q[0][2], q[1][0], q[1][1], q[1][2], part, mat, q[2] ? q[2][0] : 0, q[2] ? q[2][1] : 0, q[2] ? q[2][2] : 0);
+  for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+    const a = V[i * W + j], b = V[i * W + j + 1], c = V[(i + 1) * W + j + 1], d = V[(i + 1) * W + j];
+    put(a); put(b); put(c); put(a); put(c); put(d);
+  }
+};
+GeoB.prototype.ellipsoid = function (c, r, seg, rings, part, mat, thMax = Math.PI) {
+  this.surf(rings, seg, (u, v) => { const th = v * thMax, ph = u * Math.PI * 2; return [c[0] + r[0] * Math.sin(th) * Math.cos(ph), c[1] + r[1] * Math.cos(th), c[2] + r[2] * Math.sin(th) * Math.sin(ph)]; }, () => c, part, mat);
+};
+GeoB.prototype.sphere = function (cx, cy, cz, r, seg, rings, part, mat, thMax = Math.PI) { this.ellipsoid([cx, cy, cz], [r, r, r], seg, rings, part, mat, thMax); };
+// lathe through elliptical rings [y, rx, rz, zOffset], bottom to top, centred on x = cx
+GeoB.prototype.lathe = function (prof, seg, part, mat, cx = 0, capLo = false, capHi = false) {
+  const n = prof.length - 1;
+  const at = v => { const t = clamp(v, 0, 1) * n, i = Math.min(n - 1, Math.floor(t)), f = t - i, a = prof[i], b = prof[i + 1]; return a.map((x, k) => x + (b[k] - x) * f); };
+  this.surf(n, seg, (u, v) => { const r = at(v), ph = u * Math.PI * 2; return [cx + r[1] * Math.cos(ph), r[0], r[3] + r[2] * Math.sin(ph)]; }, p => { const r = at(0); return [cx, p[1], r[3]]; }, part, mat);
+  for (const [cap, r, ny] of [[capLo, prof[0], -1], [capHi, prof[n], 1]]) if (cap) for (let k = 0; k < seg; k++) {
+    const a0 = k / seg * Math.PI * 2, a1 = (k + 1) / seg * Math.PI * 2;
+    for (const q of [[cx, r[0], r[3]], [cx + r[1] * Math.cos(a0), r[0], r[3] + r[2] * Math.sin(a0)], [cx + r[1] * Math.cos(a1), r[0], r[3] + r[2] * Math.sin(a1)]]) this.v(q[0], q[1], q[2], 0, ny, 0, part, mat);
+  }
+};
+// tube along a polyline with per-point radii and a rounded tip
+GeoB.prototype.tube = function (pts, radii, seg, part, mat) {
+  let ref = [0, 0, 1]; const rings = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+    const T = V3.norm(V3.sub(b, a)); let B = V3.cross(T, ref); if (Math.hypot(...B) < 1e-6) B = V3.cross(T, [1, 0, 0]); B = V3.norm(B);
+    const N = V3.cross(B, T); ref = N; const ring = [];
+    for (let k = 0; k <= seg; k++) { const t = k / seg * Math.PI * 2, d = [N[0] * Math.cos(t) + B[0] * Math.sin(t), N[1] * Math.cos(t) + B[1] * Math.sin(t), N[2] * Math.cos(t) + B[2] * Math.sin(t)]; ring.push([[pts[i][0] + d[0] * radii[i], pts[i][1] + d[1] * radii[i], pts[i][2] + d[2] * radii[i]], d]); }
+    rings.push(ring);
+  }
+  const put = q => this.v(q[0][0], q[0][1], q[0][2], q[1][0], q[1][1], q[1][2], part, mat);
+  for (let i = 0; i < rings.length - 1; i++) for (let k = 0; k < seg; k++) { const a = rings[i][k], b = rings[i][k + 1], c = rings[i + 1][k + 1], d = rings[i + 1][k]; put(a); put(b); put(c); put(a); put(c); put(d); }
+  const L = pts.length - 1; this.sphere(pts[L][0], pts[L][1], pts[L][2], radii[L], seg, 3, part, mat);
+};
+// head: ellipsoid skull shaped with jaw, cheekbones, brow ridge, eye sockets and chin; front mapped for the face texture
+const HEAD_C = [0, 1.6, 0], HEAD_R = [0.074, 0.112, 0.092];
+function headPoint(th, ph) {
+  const sx = Math.sin(th) * Math.cos(ph), sy = Math.cos(th), sz = Math.sin(th) * Math.sin(ph);
+  let x = sx * HEAD_R[0], y = sy * HEAD_R[1], z = sz * HEAD_R[2];
+  const front = smooth(0, 0.5, sz);
+  if (z < 0) z *= 1.07;
+  if (y < -0.012) { const t = clamp((-y - 0.012) / 0.09, 0, 1); x *= 1 - 0.3 * t * t; z *= z < 0 ? 1 - 0.5 * t : 1 - 0.12 * t * t; }
+  x *= 1 + 0.05 * Math.exp(-(((y + 0.005) / 0.03) ** 2));
+  z += front * 0.007 * Math.exp(-(((y - 0.03) / 0.012) ** 2)) * Math.exp(-((x / 0.05) ** 2));
+  z -= front * 0.007 * Math.exp(-(((Math.abs(x) - 0.031) / 0.014) ** 2) - (((y - 0.008) / 0.012) ** 2));
+  z += front * 0.01 * Math.exp(-((x / 0.022) ** 2) - (((y + 0.1) / 0.02) ** 2));
+  return [x, y, z];
+}
+GeoB.prototype.head = function (rings, seg, hairRows, ears) {
+  const C = HEAD_C, at = q => [C[0] + q[0], C[1] + q[1], C[2] + q[2]];
+  this.surf(rings, seg, (u, v) => at(headPoint(v * Math.PI, u * Math.PI * 2)), () => C, 1, 1,
+    (u, v, p) => [0.5 + (p[0] - C[0]) / (2 * HEAD_R[0]), 0.5 + (p[1] - C[1]) / (2 * HEAD_R[1]), smooth(0.05, 0.45, Math.sin(v * Math.PI) * Math.sin(u * Math.PI * 2))]);
+  // hair shell: runs down to a hairline that is high at the forehead, lower at the temples and lowest at the nape
+  this.surf(hairRows, seg, (u, v) => {
+    const ph = u * Math.PI * 2, fz = Math.sin(ph);
+    const hl = -0.075 + 0.127 * smooth(-0.35, 0.9, fz);
+    const th = v * Math.acos(clamp(hl / HEAD_R[1], -1, 1)), q = headPoint(th, ph), sc = 1.05 + 0.025 * Math.cos(th);
+    return at([q[0] * sc, q[1] * sc, q[2] * sc]);
+  }, () => C, 1, 3);
+  // nose
+  const zf = headPoint(Math.PI / 2 + 0.05, Math.PI / 2)[2], o = at([0, -0.01, zf - 0.02]);
+  const P = q => at(q), br = P([0, 0.024, zf - 0.004]), tip = P([0, -0.024, zf + 0.021]), wl = P([-0.017, -0.031, zf + 0.001]), wr = P([0.017, -0.031, zf + 0.001]), un = P([0, -0.036, zf + 0.008]);
+  const bl = P([-0.01, 0.012, zf - 0.002]), brr = P([0.01, 0.012, zf - 0.002]);
+  this.tri(br, bl, tip, o, 1, 1); this.tri(br, tip, brr, o, 1, 1); this.tri(bl, wl, tip, o, 1, 1); this.tri(brr, tip, wr, o, 1, 1);
+  this.tri(wl, un, tip, o, 1, 1); this.tri(tip, un, wr, o, 1, 1);
+  if (ears) for (const s of [-1, 1]) this.ellipsoid(at([s * 0.073, -0.004, -0.01]), [0.013, 0.031, 0.02], 8, 5, 1, 1);
 };
 GeoB.prototype.hand = function (part) {
   // local frame: x = inward (toward board centre), y = along board edge, z = board normal (toward viewer)
@@ -611,32 +884,145 @@ GeoB.prototype.hand = function (part) {
   for (let k = 0; k < 4; k++) this.box(0.011, -0.029 + k * 0.0195, 0.012, 0.03, 0.017, 0.011, part, 1); // fingertips on the front face
   this.box(0.03, -0.058, -0.044, 0.022, 0.045, 0.02, part, 1);       // thumb
 };
+GeoB.prototype.handHi = function (part) {
+  this.ellipsoid([0.047, 0, -0.03], [0.044, 0.048, 0.016], 10, 6, part, 1);  // palm behind the board
+  const len = [0.92, 1.0, 0.97, 0.82];
+  for (let k = 0; k < 4; k++) {                                              // fingers curl round the edge onto the front face
+    const y = -0.029 + k * 0.0195, L = len[k];
+    this.tube([[0.02, y, -0.03], [-0.006, y, -0.026], [-0.013, y, -0.006], [-0.007, y, 0.011], [0.004 + 0.012 * L, y, 0.013]],
+      [0.0098, 0.0093, 0.0088, 0.0082, 0.0074].map(r => r * (0.92 + 0.08 * L)), 6, part, 1);
+  }
+  this.tube([[0.066, -0.035, -0.036], [0.052, -0.056, -0.042], [0.034, -0.07, -0.036], [0.022, -0.074, -0.024]], [0.013, 0.0115, 0.0102, 0.0092], 6, part, 1); // thumb
+};
 GeoB.prototype.build = function () {
+  // de-duplicate into an indexed mesh so shared vertices are transformed once
+  const map = new Map(), idx = [], A = { p: [], n: [], part: [], mat: [], uv: [], face: [] };
+  const R = x => Math.round(x * 1e5);
+  for (let i = 0; i < this.part.length; i++) {
+    const key = [R(this.p[i * 3]), R(this.p[i * 3 + 1]), R(this.p[i * 3 + 2]), R(this.n[i * 3]), R(this.n[i * 3 + 1]), R(this.n[i * 3 + 2]), this.part[i], this.mat[i], R(this.uv[i * 2]), R(this.uv[i * 2 + 1]), R(this.face[i])].join(',');
+    let k = map.get(key);
+    if (k === undefined) {
+      k = A.part.length; map.set(key, k);
+      A.p.push(this.p[i * 3], this.p[i * 3 + 1], this.p[i * 3 + 2]); A.n.push(this.n[i * 3], this.n[i * 3 + 1], this.n[i * 3 + 2]);
+      A.part.push(this.part[i]); A.mat.push(this.mat[i]); A.uv.push(this.uv[i * 2], this.uv[i * 2 + 1]); A.face.push(this.face[i]);
+    }
+    idx.push(k);
+  }
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
-  g.setAttribute('aPart', new THREE.Float32BufferAttribute(this.part, 1));
-  g.setAttribute('aMat', new THREE.Float32BufferAttribute(this.mat, 1));
+  g.setAttribute('position', new THREE.Float32BufferAttribute(A.p, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(A.n, 3));
+  g.setAttribute('aPart', new THREE.Float32BufferAttribute(A.part, 1));
+  g.setAttribute('aMat', new THREE.Float32BufferAttribute(A.mat, 1));
+  g.setAttribute('aUv', new THREE.Float32BufferAttribute(A.uv, 2));
+  g.setAttribute('aFace', new THREE.Float32BufferAttribute(A.face, 1));
+  g.setIndex(idx);
   return g;
 };
-const PERSON_GEO = (() => {
-  const b = new GeoB();
+// parts: 0 body, 1 head, 2/3 upper arm, 4/5 hand, 6/7 forearm, 8 thighs, 9 shins + shoes (see PERSON_VS)
+function buildPerson(hi) {
+  const b = new GeoB(), S = hi ? 14 : 8;
   for (const sx of [-0.095, 0.095]) {
-    b.cyl(sx, 0, 0.45, 0.9, 0.062, 0.088, 7, 8, 2, true);             // thigh (hip to knee)
-    b.cyl(sx, 0, 0.07, 0.47, 0.045, 0.06, 7, 9, 2, true);             // shin
-    b.box(sx, 0.04, 0.045, 0.1, 0.08, 0.26, 9, 2);                    // shoe
+    if (hi) {
+      b.lathe([[0.45, 0.054, 0.056, 0.005], [0.56, 0.066, 0.068, 0.006], [0.72, 0.079, 0.082, 0.004], [0.9, 0.088, 0.086, 0]], S, 8, 2, sx);  // thigh
+      b.lathe([[0.07, 0.038, 0.04, 0], [0.18, 0.043, 0.047, -0.004], [0.32, 0.054, 0.06, -0.01], [0.47, 0.05, 0.052, 0]], S, 9, 2, sx);     // shin with calf
+      b.sphere(sx, 0.46, 0.004, 0.053, 10, 6, 9, 2);                                                                                    // knee
+      b.box(sx, 0.035, 0.01, 0.095, 0.07, 0.2, 9, 2); b.ellipsoid([sx, 0.04, 0.11], [0.048, 0.035, 0.06], 10, 5, 9, 2);             // shoe + toe
+    } else {
+      b.cyl(sx, 0, 0.45, 0.9, 0.062, 0.088, 7, 8, 2, true);
+      b.cyl(sx, 0, 0.07, 0.47, 0.045, 0.06, 7, 9, 2, true);
+      b.box(sx, 0.04, 0.045, 0.1, 0.08, 0.26, 9, 2);
+    }
   }
-  b.cyl(0, 0, 0.82, 0.96, 0.17, 0.175, 8, 0, 2, true, 1, 0.66);      // hips / waistband
-  b.cyl(0, 0, 0.94, 1.44, 0.165, 0.21, 8, 0, 0, true, 1, 0.62);
-  for (const sx of [-0.18, 0.18]) b.sphere(sx, 1.385, 0, 0.066, 7, 5, 0, 0); // rounded shoulders
-  b.cyl(0, 0, 1.42, 1.52, 0.05, 0.05, 6, 0, 1, false);
-  b.sphere(0, 1.6, 0.0, 0.11, 8, 6, 1, 1);
-  b.sphere(0, 1.61, -0.006, 0.117, 8, 3, 1, 3, Math.PI * 0.5);
-  for (const part of [2, 3]) { b.cyl(0, 0, 0, 0.42, 1.08, 1.08, 7, part, 0, true); b.cyl(0, 0, 0.42, 1, 1, 1, 7, part, 1, true); } // upper arms: sleeve, then skin
-  b.cyl(0, 0, 0, 1, 1, 1, 7, 6, 1, true); b.cyl(0, 0, 0, 1, 1, 1, 7, 7, 1, true);   // forearms
-  b.hand(4); b.hand(5);
+  const hips = [[0.82, 0.166, 0.108, 0], [0.9, 0.164, 0.106, 0], [0.96, 0.158, 0.101, 0.002]];
+  const torso = hi ? [[0.95, 0.157, 0.1, 0.002], [1.03, 0.152, 0.098, 0.005], [1.12, 0.16, 0.104, 0.012], [1.24, 0.18, 0.115, 0.016], [1.33, 0.192, 0.114, 0.012], [1.39, 0.186, 0.1, 0], [1.44, 0.13, 0.08, -0.006], [1.475, 0.066, 0.056, -0.004]]
+                   : [[0.95, 0.157, 0.1, 0.002], [1.12, 0.16, 0.104, 0.012], [1.3, 0.19, 0.115, 0.014], [1.42, 0.16, 0.09, -0.004], [1.47, 0.07, 0.058, -0.004]];
+  b.lathe(hips, S, 0, 2, 0, true); b.lathe(torso, S, 0, 0);
+  for (const sx of [-0.178, 0.178]) b.ellipsoid([sx, 1.382, 0], [0.066, 0.062, 0.064], hi ? 12 : 6, hi ? 8 : 4, 0, 0); // deltoids
+  b.lathe([[1.42, 0.047, 0.05, 0], [1.54, 0.045, 0.047, 0.004]], hi ? 12 : 6, 0, 1);                                      // neck
+  b.head(hi ? 22 : 7, hi ? 28 : 10, hi ? 10 : 4, hi);
+  for (const part of [2, 3]) { b.lathe([[0, 1.08, 1.08, 0], [0.42, 1.08, 1.08, 0]], hi ? 12 : 7, part, 0, 0, true); b.lathe(hi ? [[0.42, 1, 1, 0], [0.55, 1, 1, 0], [0.7, 1, 1, 0], [0.85, 1, 1, 0], [1, 1, 1, 0]] : [[0.42, 1, 1, 0], [1, 1, 1, 0]], hi ? 12 : 7, part, 1, 0, false, true); }
+  for (const part of [6, 7]) b.lathe(hi ? [0, 0.15, 0.3, 0.45, 0.6, 0.8, 1].map(y => [y, 1, 1, 0]) : [[0, 1, 1, 0], [1, 1, 1, 0]], hi ? 12 : 7, part, 1, 0, true, true);
+  if (hi) { b.handHi(4); b.handHi(5); } else { b.hand(4); b.hand(5); }
   return b.build();
-})();
+}
+const PERSON_GEO = buildPerson(false), PERSON_GEO_HI = buildPerson(true);
+/* ---------------- face atlas: 8 identities x (closed mouth, shouting), drawn as translucent features over skin ---------------- */
+function makeFaceAtlas() {
+  const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S * 4;
+  const g = cv.getContext('2d'), R = mulberry(77);
+  const IDS = [
+    { iris: '#5a3a1e', beard: 0 }, { iris: '#3f6f9a', beard: 1 }, { iris: '#4a2e18', beard: 2, glasses: true }, { iris: '#6d7f4a', beard: 0, paint: true },
+    { iris: '#2e1d10', beard: 1 }, { iris: '#5c86a8', beard: 0, glasses: true }, { iris: '#3b2616', beard: 2 }, { iris: '#7a5a2e', beard: 0, paint: true },
+  ];
+  const ell = (x, y, rx, ry, fill) => { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fillStyle = fill; g.fill(); };
+  for (let id = 0; id < 16; id++) {
+    const spec = IDS[id % 8], open = id >= 8, x0 = (id % 4) * S, y0 = Math.floor(id / 4) * S;
+    // canvas y runs down, texture v runs up (flipY), so v maps to y0 + (1 - v) * S
+    const X = u => x0 + u * S, Y = v => y0 + (1 - v) * S;
+    g.save(); g.beginPath(); g.rect(x0, y0, S, S); g.clip();
+    // soft modelling: temples, under-cheek and jaw shading, and a little colour in the cheeks
+    for (const s of [-1, 1]) {
+      let gr = g.createRadialGradient(X(0.5 + s * 0.4), Y(0.5), 0, X(0.5 + s * 0.4), Y(0.5), S * 0.22); gr.addColorStop(0, 'rgba(60,30,20,0.22)'); gr.addColorStop(1, 'rgba(60,30,20,0)'); g.fillStyle = gr; g.fillRect(x0, y0, S, S);
+      gr = g.createRadialGradient(X(0.5 + s * 0.2), Y(0.36), 0, X(0.5 + s * 0.2), Y(0.36), S * 0.1); gr.addColorStop(0, 'rgba(200,80,70,0.16)'); gr.addColorStop(1, 'rgba(200,80,70,0)'); g.fillStyle = gr; g.fillRect(x0, y0, S, S);
+    }
+    let gr = g.createLinearGradient(0, Y(0.2), 0, Y(0.02)); gr.addColorStop(0, 'rgba(50,25,15,0)'); gr.addColorStop(1, 'rgba(50,25,15,0.3)'); g.fillStyle = gr; g.fillRect(x0, Y(0.2), S, S * 0.2);
+    // stubble / beard
+    if (spec.beard) {
+      const a = spec.beard === 2 ? 0.75 : 0.22, n = spec.beard === 2 ? 2600 : 1800;
+      for (let i = 0; i < n; i++) {
+        const u = 0.18 + R() * 0.64, v = 0.02 + R() * 0.34, du = (u - 0.5) / 0.32, dv = (v - 0.3) / 0.3;
+        if (du * du + dv * dv > 1 || v > 0.36 - 0.25 * du * du) continue;
+        if (Math.abs(u - 0.5) < 0.13 && Math.abs(v - 0.25) < (open ? 0.1 : 0.035)) continue;
+        g.fillStyle = `rgba(35,24,18,${a * (0.5 + R() * 0.5)})`; g.fillRect(X(u), Y(v), 2 + R() * 2.5, 2 + R() * 2.5);
+      }
+    }
+    // eyes: socket shadow, sclera, iris, pupil, highlight, upper lid and lash line
+    for (const s of [-1, 1]) {
+      const ex = 0.5 + s * 0.21, ey = 0.545, ry = open ? 0.024 : 0.03;
+      gr = g.createRadialGradient(X(ex), Y(ey), 0, X(ex), Y(ey), S * 0.1); gr.addColorStop(0, 'rgba(70,35,30,0.28)'); gr.addColorStop(1, 'rgba(70,35,30,0)'); g.fillStyle = gr; g.fillRect(x0, y0, S, S);
+      g.save(); g.beginPath(); g.ellipse(X(ex), Y(ey), S * 0.075, S * ry, 0, 0, Math.PI * 2); g.clip();
+      g.fillStyle = '#f1ece6'; g.fill();
+      ell(X(ex + s * -0.01), Y(ey), S * 0.032, S * 0.032, spec.iris); ell(X(ex + s * -0.01), Y(ey), S * 0.014, S * 0.014, '#0b0807');
+      ell(X(ex + s * -0.01 + 0.012), Y(ey + 0.012), S * 0.006, S * 0.006, 'rgba(255,255,255,0.85)');
+      g.restore();
+      g.lineCap = 'round'; g.strokeStyle = 'rgba(30,16,12,0.9)'; g.lineWidth = S * 0.012;
+      g.beginPath(); g.ellipse(X(ex), Y(ey), S * 0.077, S * (ry + 0.002), 0, Math.PI * 1.05, Math.PI * 1.95); g.stroke();
+      g.strokeStyle = 'rgba(90,45,35,0.35)'; g.lineWidth = S * 0.006;
+      g.beginPath(); g.ellipse(X(ex), Y(ey), S * 0.07, S * (ry + 0.004), 0, Math.PI * 0.15, Math.PI * 0.85); g.stroke();
+      // brow, pulled down in a shout
+      g.strokeStyle = 'rgba(38,24,16,0.88)'; g.lineWidth = S * 0.024;
+      g.beginPath(); g.moveTo(X(0.5 + s * 0.11), Y(open ? 0.61 : 0.625)); g.quadraticCurveTo(X(0.5 + s * 0.21), Y(0.665), X(0.5 + s * 0.31), Y(0.635)); g.stroke();
+    }
+    // nose: nostrils and a shadow under the tip (the nose itself is geometry)
+    for (const s of [-1, 1]) ell(X(0.5 + s * 0.035), Y(0.395), S * 0.014, S * 0.008, 'rgba(60,25,20,0.55)');
+    gr = g.createRadialGradient(X(0.5), Y(0.37), 0, X(0.5), Y(0.37), S * 0.07); gr.addColorStop(0, 'rgba(80,40,30,0.22)'); gr.addColorStop(1, 'rgba(80,40,30,0)'); g.fillStyle = gr; g.fillRect(x0, y0, S, S);
+    // mouth
+    if (open) {
+      g.beginPath(); g.ellipse(X(0.5), Y(0.245), S * 0.1, S * 0.075, 0, 0, Math.PI * 2); g.fillStyle = 'rgba(165,78,72,0.9)'; g.fill();
+      g.beginPath(); g.ellipse(X(0.5), Y(0.245), S * 0.085, S * 0.062, 0, 0, Math.PI * 2); g.fillStyle = '#2a0e0e'; g.fill();
+      g.save(); g.clip(); g.fillStyle = '#efe9df'; g.fillRect(X(0.4), Y(0.3), S * 0.2, S * 0.025);
+      ell(X(0.5), Y(0.19), S * 0.06, S * 0.03, '#a8424a'); g.restore();
+    } else {
+      g.beginPath(); g.ellipse(X(0.5), Y(0.265), S * 0.085, S * 0.022, 0, 0, Math.PI * 2); g.fillStyle = 'rgba(170,82,76,0.55)'; g.fill();
+      g.strokeStyle = 'rgba(70,25,22,0.85)'; g.lineWidth = S * 0.008;
+      g.beginPath(); g.moveTo(X(0.41), Y(0.272)); g.quadraticCurveTo(X(0.5), Y(0.255), X(0.59), Y(0.272)); g.stroke();
+    }
+    if (spec.glasses) {
+      g.strokeStyle = 'rgba(20,20,24,0.95)'; g.lineWidth = S * 0.014;
+      for (const s of [-1, 1]) { g.beginPath(); g.ellipse(X(0.5 + s * 0.21), Y(0.54), S * 0.1, S * 0.068, 0, 0, Math.PI * 2); g.stroke(); }
+      g.beginPath(); g.moveTo(X(0.39), Y(0.555)); g.quadraticCurveTo(X(0.5), Y(0.58), X(0.61), Y(0.555)); g.stroke();
+    }
+    if (spec.paint) {   // team colours on the cheek
+      g.fillStyle = 'rgba(12,45,120,0.95)'; g.fillRect(X(0.22), Y(0.44), S * 0.045, S * 0.12);
+      g.fillStyle = 'rgba(245,245,245,0.95)'; g.fillRect(X(0.265), Y(0.44), S * 0.045, S * 0.12);
+      g.fillStyle = 'rgba(12,45,120,0.95)'; g.fillRect(X(0.31), Y(0.44), S * 0.045, S * 0.12);
+    }
+    g.restore();
+  }
+  const t = new THREE.CanvasTexture(cv); t.anisotropy = 4; t.minFilter = THREE.LinearMipmapLinearFilter;
+  return t;
+}
+U.uFaces.value = makeFaceAtlas();
 const BOARD_GEO = new THREE.BoxGeometry(1, 1, 1);
 // tip-up stadium seat, relative to the fan's standing spot on the tread
 const SEAT_GEO = (() => {
@@ -646,16 +1032,15 @@ const SEAT_GEO = (() => {
   b.box(0, 0.16, -0.24, 0.07, 0.31, 0.2, 0, 0);     // pedestal
   return b.build();
 })();
-const SEAT_VS = `
-uniform vec3 uLight; uniform vec3 uSky; uniform vec3 uGround; uniform vec3 uSeatCol;
+const SEAT_VS = LIGHT_GLSL + `
+uniform vec3 uSeatCol;
 attribute vec3 iSeat; varying vec3 vCol;
 void main(){
-  vec3 n = normalize(normal); float lam = max(dot(n, uLight), 0.0);
-  vec3 amb = mix(uGround, uSky, n.y*0.5 + 0.5);
-  vCol = uSeatCol*(amb*0.95 + lam*0.7);
-  gl_Position = projectionMatrix*modelViewMatrix*vec4(iSeat + position, 1.0);
+  vec3 wp = iSeat + position;
+  vCol = uSeatCol*lightAt(wp, normalize(normal))*mix(0.55, 1.0, smoothstep(0.1, 0.7, position.y));
+  gl_Position = projectionMatrix*modelViewMatrix*vec4(wp, 1.0);
 }`;
-const seatMat = new THREE.ShaderMaterial({ uniforms: { uLight: U.uLight, uSky: U.uSky, uGround: U.uGround, uSeatCol: { value: new THREE.Color(0x1d3f8f) } }, vertexShader: SEAT_VS, fragmentShader: PERSON_FS });
+const seatMat = new THREE.ShaderMaterial({ uniforms: { ...LU, uSeatCol: { value: new THREE.Color(0x1d3f8f) } }, vertexShader: SEAT_VS, fragmentShader: SIMPLE_FS });
 const sitTarget = mode => settings.seated && mode !== 2 ? 1 : 0; // fans stand to carry a tifo
 
 /* ---------------- crowd state ---------------- */
@@ -723,22 +1108,24 @@ function buildCrowd(mode) {
   U.uHold.value = holdTarget[mode]; U.uSit.value = sitTarget(mode);
 
   // chunks (hybrid LOD: detailed meshes near camera, sprites far away)
-  const CW = 32, CH = 24;
+  const CW = 16, CH = 12;
+  const inst = (geo, attrs) => {
+    const g = new THREE.InstancedBufferGeometry(); g.setIndex(geo.index);
+    for (const k of Object.keys(geo.attributes)) g.setAttribute(k, geo.attributes[k]);
+    for (const k in attrs) g.setAttribute(k, attrs[k]);
+    return g;
+  };
   for (let r0 = 0; r0 < rows; r0 += CH) for (let c0 = 0; c0 < cols; c0 += CW) {
     const idx = []; const r1 = Math.min(rows, r0 + CH), c1 = Math.min(cols, c0 + CW);
     for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) idx.push(r * cols + c);
     const seatA = pick(seat, 3, idx), randA = pick(rand, 4, idx), shirtA = pick(shirt, 3, idx), skinA = pick(skin, 3, idx);
     const handsA = new Float32Array(idx.length * 2);
-    const g = new THREE.InstancedBufferGeometry();
-    for (const k of ['position', 'normal', 'aPart', 'aMat']) g.setAttribute(k, PERSON_GEO.attributes[k]);
-    g.setAttribute('iSeat', new THREE.InstancedBufferAttribute(seatA, 3));
-    g.setAttribute('iRand', new THREE.InstancedBufferAttribute(randA, 4));
-    g.setAttribute('iShirt', new THREE.InstancedBufferAttribute(shirtA, 3));
-    g.setAttribute('iSkin', new THREE.InstancedBufferAttribute(skinA, 3));
     const hAttr = new THREE.InstancedBufferAttribute(handsA, 2); hAttr.setUsage(THREE.DynamicDrawUsage);
-    g.setAttribute('iHands', hAttr);
-    g.instanceCount = idx.length;
+    const ia = { iSeat: new THREE.InstancedBufferAttribute(seatA, 3), iRand: new THREE.InstancedBufferAttribute(randA, 4), iShirt: new THREE.InstancedBufferAttribute(shirtA, 3), iSkin: new THREE.InstancedBufferAttribute(skinA, 3), iHands: hAttr };
+    const g = inst(PERSON_GEO, ia); g.instanceCount = idx.length;
     const mesh = new THREE.Mesh(g, personMat); mesh.frustumCulled = false;
+    const gh = inst(PERSON_GEO_HI, ia); gh.instanceCount = idx.length;
+    const hi = new THREE.Mesh(gh, personMat); hi.frustumCulled = false; hi.visible = false;
     const pg = new THREE.BufferGeometry();
     pg.setAttribute('position', new THREE.BufferAttribute(seatA, 3));
     pg.setAttribute('iSeat', new THREE.BufferAttribute(seatA, 3));
@@ -746,16 +1133,13 @@ function buildCrowd(mode) {
     pg.setAttribute('iShirt', new THREE.BufferAttribute(shirtA, 3));
     pg.setAttribute('iSkin', new THREE.BufferAttribute(skinA, 3));
     const pts = new THREE.Points(pg, pointMat); pts.frustumCulled = false;
-    const sg = new THREE.InstancedBufferGeometry();
-    for (const k of ['position', 'normal']) sg.setAttribute(k, SEAT_GEO.attributes[k]);
-    sg.setAttribute('iSeat', new THREE.InstancedBufferAttribute(seatA, 3));
-    sg.instanceCount = idx.length;
+    const sg = inst(SEAT_GEO, { iSeat: ia.iSeat }); sg.instanceCount = idx.length;
     const seats = new THREE.Mesh(sg, seatMat); seats.frustumCulled = false;
     const cx = ((c0 + c1 - 1) / 2 - (cols - 1) / 2) * pitch, rr = (r0 + r1 - 1) / 2;
     const center = new THREE.Vector3(cx, rr * rise + 1.3, -rr * run);
     const radius = Math.hypot((c1 - c0) * pitch / 2, (r1 - r0) * run / 2, (r1 - r0) * rise / 2) + 2.2;
-    group.add(mesh, pts, seats);
-    C.chunks.push({ idx, mesh, pts, seats, hAttr, sphere: new THREE.Sphere(center, radius) });
+    group.add(mesh, hi, pts, seats);
+    C.chunks.push({ idx, mesh, hi, pts, seats, hAttr, sphere: new THREE.Sphere(center, radius) });
   }
 
   if (mode === 1) {
@@ -795,15 +1179,20 @@ function buildStand() {
   const zBack = -rows * run - run * 0.5, yTop = rows * rise;
   b.quad([x0, yTop, zBack], [x1, yTop, zBack], [x1, yTop + 3, zBack], [x0, yTop + 3, zBack], fw, fw, fw, fw, 0, 0);
   const sg = b.build(); const stand = new THREE.Mesh(sg, standMat); group.add(stand);
-  const roofY = yTop + 7 + C.H * 0.08;
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(W + 6, 0.5, rows * run + 6), roofMat);
-  roof.position.set(0, roofY, zBack / 2 + 2.2); group.add(roof);
+  standMat.uniforms.uRun.value = run; standMat.uniforms.uRise.value = rise;
+  const roofY = yTop + 7 + C.H * 0.08, roofD = rows * run + 6, roofZ = zBack / 2 + 2.2;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(W + 6, 0.5, roofD), roofMat);
+  roof.position.set(0, roofY, roofZ); group.add(roof);
+  U.uRoofMin.value.set(-(W + 6) / 2, roofY - 0.25, roofZ - roofD / 2); U.uRoofMax.value.set((W + 6) / 2, roofY + 0.25, roofZ + roofD / 2);
   const strip = new THREE.Mesh(new THREE.BoxGeometry(W + 6, 0.18, 0.25), stripMat);
   strip.position.set(0, roofY - 0.3, zBack / 2 + 2.2 + (rows * run + 6) / 2); group.add(strip);
   const pw = W + 160, pd = 150;
   const pitch = new THREE.Mesh(new THREE.PlaneGeometry(pw, pd), pitchMat);
-  pitch.rotation.x = -Math.PI / 2; pitch.position.set(0, -1.0, run * 0.5 + pd / 2);
-  pitchTex.repeat.set(1, pd / 6); group.add(pitch);
+  pitch.rotation.x = -Math.PI / 2; pitch.position.set(0, -1.0, run * 0.5 + pd / 2); group.add(pitch);
+  TURF.uZ0.value = run * 0.5 + 6; grassU.uZmin.value = run * 0.5 + 0.15;
+  const hl = Math.max(W + 20, 110);
+  const hoard = new THREE.Mesh(new THREE.BoxGeometry(hl, 0.9, 0.08), hoardMat);
+  hoard.position.set(0, -0.55, run * 0.5 + 2.6); hoardTex.repeat.set(hl / 45, 1); group.add(hoard);
 }
 
 /* ---------------- tifo cloth ---------------- */
@@ -848,6 +1237,7 @@ function makeTifo() {
     base[gj * GW + gi] = v;
   }
   const spacing = W / (nx - 1);
+  U.uTifo.value.set(yb, H, slopeZ, W / 2);
   return { nx, ny, n, pos, prev, rest, flatP, ca: Int32Array.from(ca), cb: Int32Array.from(cb), cl: Float32Array.from(cl), ck: Float32Array.from(ck), geo: g, pa, mesh,
     hx, hr, gx0, gr0, GW, GH, base, S, Rx: Math.max(0.5, spacing * 1.6), Rz: Math.max(0.55, spacing * 1.6), morph: 0, live: false, shade: 0 };
 }
@@ -1005,7 +1395,13 @@ function views() {
     perspective: { tx: 0, ty: cy, tz: zMid, th: -0.3, ph: 0.17, fov: settings.fov, fh: visH * 1.02, ex: zFront - zMid },
     pitchside: { tx: 0, ty: yb + H * 0.3, tz: zMid * 0.6, th: 0.62, ph: 0.03, fov: 58, fh: visH * 0.75, ex: 0 },
     closeup: closeupView(),
+    touchline: touchlineView(),
   };
+}
+// standing on the grass in front of the hoardings, eye height, looking up into the stand
+function touchlineView() {
+  const fov = 50, radius = 17, fh = 2 * radius * Math.tan(fov * Math.PI / 360), ty = 1.6, eye = 0.7;
+  return { tx: -3, ty, tz: -1.5, th: 0.32, ph: Math.asin((eye - ty) / radius), fov, fh, ex: 0 };
 }
 let closeSeed = 0;
 function closeupView() {
@@ -1040,18 +1436,25 @@ function updateCamera(dt) {
 
 /* ---------------- LOD + culling ---------------- */
 const frustum = new THREE.Frustum(), projScreen = new THREE.Matrix4();
-const LOD_PX = 40;
+const LOD_PX = 40, LOD_HI = 150, HI_CHUNKS = 8;
 function updateLOD() {
   projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse); frustum.setFromProjectionMatrix(projScreen);
   const h = stage.clientHeight; const pxScale = (1 / Math.tan(camera.fov * Math.PI / 360)) * h / 2;
   U.uPx.value = pxScale * renderer.getPixelRatio();
-  let detailed = 0;
+  let detailed = 0; const hiList = [];
   for (const ch of C.chunks) {
     const vis = frustum.intersectsSphere(ch.sphere);
-    const d = Math.max(0.1, camera.position.distanceTo(ch.sphere.center) - ch.sphere.radius * 0.6);
+    const dc = camera.position.distanceTo(ch.sphere.center);
+    const d = Math.max(0.1, dc - ch.sphere.radius * 0.6);
     const det = 1.7 * pxScale / d > LOD_PX;
-    ch.mesh.visible = ch.seats.visible = vis && det; ch.pts.visible = vis && !det; if (vis && det) detailed += ch.idx.length;
+    // nearest fans (e.g. the front edge under a tifo, close-ups) switch to the sculpted mesh with faces and fingers
+    const hiPx = 1.7 * pxScale / Math.max(0.1, dc - ch.sphere.radius);
+    ch.near = vis && hiPx > LOD_HI ? hiPx : 0; if (ch.near) hiList.push(ch);
+    ch.mesh.visible = ch.hi.visible = false;
+    ch.seats.visible = vis && det; ch.mesh.visible = vis && det; ch.pts.visible = vis && !det; if (vis && det) detailed += ch.idx.length;
   }
+  hiList.sort((a, b) => b.near - a.near);
+  for (let i = 0; i < Math.min(HI_CHUNKS, hiList.length); i++) { hiList[i].hi.visible = true; hiList[i].mesh.visible = false; }
   return detailed;
 }
 
@@ -1103,9 +1506,26 @@ function step(dt) {
   U.uWaveOn.value = damp(U.uWaveOn.value, waveActive ? 1 : 0, 2.5, dt);
   U.uHandScale.value = HAND_BASE[C.mode] * settings.handScale;
   U.uGap.value = settings.gap;
+  U.uTifoOn.value = C.mode === 2 && C.cloth ? C.cloth.morph : 0;
   if (C.mode === 2) updateTifo(dt);
   updateCamera(dt);
+  updateEnvironment();
   updateLOD();
+}
+const _fwd = new THREE.Vector3();
+function updateSun() {
+  const el = lerp(12, 72, settings.sunHeight) * Math.PI / 180, az = 0.5;
+  U.uLight.value.set(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
+  sun.position.copy(U.uLight.value);
+}
+function updateEnvironment() {
+  U.uCamPos.value.copy(camera.position);
+  skyMesh.position.copy(camera.position); skyMesh.scale.setScalar(camera.far * 0.9);
+  // grass blades only matter near the turf: follow a point just ahead of the camera
+  camera.getWorldDirection(_fwd); const fl = Math.hypot(_fwd.x, _fwd.z) || 1;
+  const fx = camera.position.x + _fwd.x / fl * GRASS.tile * 0.42, fz = camera.position.z + _fwd.z / fl * GRASS.tile * 0.42;
+  grassU.uFocus.value.set(fx, fz);
+  grassMesh.visible = settings.grass && camera.position.y < 14 && camera.position.z > 0 && activeView !== 'flat';
 }
 function renderNow() { step(0.0001); renderer.render(scene, camera); }
 
@@ -1170,7 +1590,7 @@ glCanvas.addEventListener('pointermove', e => {
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
     cam.tx += (-dx * right.x + dy * up.x) * k; cam.ty += (-dx * right.y + dy * up.y) * k; cam.tz += (-dx * right.z + dy * up.z) * k;
   } else {
-    cam.th -= dx * 0.005; cam.ph = clamp(cam.ph + dy * 0.004, -0.25, 1.35);
+    cam.th -= dx * 0.005; cam.ph = clamp(cam.ph + dy * 0.004, -0.9, 1.35);
     if (cam.fov < 8) { cam.fov = 8 + 0 * cam.fov; }
   }
 });
@@ -1252,7 +1672,7 @@ document.addEventListener('keydown', e => {
   if (k === 's') { toggleSettings(); return; }
   if (k === '1' || k === '2' || k === '3') { setMode(+k); return; }
   if (!(state === 'intro' || state === 'live')) return;
-  const map = { w: toggleWave, b: toggleHold, m: toggleMill, t: toggleSit, r: replay, f: () => camTo('flat', 1.8), p: () => camTo('perspective', activeView === 'flat' ? 3 : 1.6), g: () => camTo('pitchside', 1.6), c: () => camTo('closeup', 1.6) };
+  const map = { w: toggleWave, b: toggleHold, m: toggleMill, t: toggleSit, r: replay, f: () => camTo('flat', 1.8), p: () => camTo('perspective', activeView === 'flat' ? 3 : 1.6), g: () => camTo('pitchside', 1.6), c: () => camTo('closeup', 1.6), l: () => camTo('touchline', 1.8) };
   if (map[k]) { e.preventDefault(); map[k](); }
 });
 
@@ -1270,7 +1690,7 @@ const SLIDERS = {
     { key: 'tifoDrift', label: 'Tifo drift', min: 0, max: 1, fmt: v => v.toFixed(2), modes: '2' },
     { key: 'energy', label: 'Crowd energy', min: 0.2, max: 1.6, fmt: v => v.toFixed(2) },
   ],
-  camera: [ { key: 'fov', label: 'Perspective FOV', min: 20, max: 75, fmt: v => Math.round(v) + '°' } ],
+  camera: [ { key: 'fov', label: 'Perspective FOV', min: 20, max: 75, fmt: v => Math.round(v) + '°' }, { key: 'sunHeight', label: 'Sun height', min: 0, max: 1, fmt: v => Math.round(lerp(12, 72, v)) + '°' } ],
   audio: [ { key: 'volume', label: 'Volume', min: 0, max: 1, fmt: v => Math.round(v * 100) + '%' } ],
 };
 const getV = d => d.key === 'count' ? settings.count[settings.mode] : settings[d.key];
@@ -1280,6 +1700,7 @@ function fromT(d, t) { const [a, b] = range(d); t = clamp(t, 0, 1); return d.log
 function setV(d, v) {
   if (d.key === 'count') settings.count[settings.mode] = Math.round(v); else settings[d.key] = v;
   if (d.key === 'volume') [sndWrong, sndRight].forEach(a => a.volume = v);
+  if (d.key === 'sunHeight') updateSun();
   if (d.rebuild) scheduleRebuild();
 }
 function sliderRow(d) {
@@ -1306,7 +1727,7 @@ function buildSettingsRows() {
   const fill = (id, list, extra) => { const el = $(id); el.innerHTML = ''; list.forEach(d => el.append(sliderRow(d))); if (extra) extra.forEach(x => el.append(x)); };
   fill('#sceneRows', SLIDERS.scene);
   fill('#motionRows', SLIDERS.motion);
-  fill('#cameraRows', SLIDERS.camera, [toggleRow('Auto reveal 3D', 'autoReveal')]);
+  fill('#cameraRows', SLIDERS.camera, [toggleRow('Auto reveal 3D', 'autoReveal'), toggleRow('Grass blades', 'grass')]);
   fill('#audioRows', SLIDERS.audio, [toggleRow('Crowd sound', 'sound')]);
   syncControls();
 }
@@ -1316,15 +1737,21 @@ function setTheme(t) {
   theme = t; document.documentElement.dataset.theme = t;
   $('#btnTheme').innerHTML = t === 'dark' ? ICON_SUN : ICON_MOON;
   if (t === 'dark') {
-    renderer.setClearColor(0x07090d); standMat.color.set(0x30343c); seatMat.uniforms.uSeatCol.value.set(0x1a3a86); roofMat.color.set(0x16181d); pitchMat.color.set(0x9aa39a);
-    hemi.intensity = 0.8; sun.intensity = 0.55; U.uSky.value.set(0.62, 0.64, 0.7); U.uGround.value.set(0.22, 0.22, 0.26);
+    // night match under floodlights
+    renderer.setClearColor(0x07090d); standMat.uniforms.uCol.value.set(0x4a4e57); seatMat.uniforms.uSeatCol.value.set(0x1a3a86); roofMat.color.set(0x16181d);
+    hemi.intensity = 0.55; sun.intensity = 0.6; U.uSky.value.set(0.36, 0.39, 0.47); U.uGround.value.set(0.13, 0.13, 0.15);
+    U.uSunCol.value.set(0.95, 0.97, 1.0); U.uFogCol.value.set(0.07, 0.09, 0.13); skyU.uZen.value.set(0.01, 0.015, 0.035); skyU.uGlow.value = 0.15;
+    TURF.uTurfA.value.set(0.1, 0.27, 0.08); TURF.uTurfB.value.set(0.19, 0.42, 0.13);
   } else {
-    renderer.setClearColor(0xd6dde6); standMat.color.set(0x9ea4ad); seatMat.uniforms.uSeatCol.value.set(0x2451b3); roofMat.color.set(0x5d626b); pitchMat.color.set(0xffffff);
-    hemi.intensity = 0.95; sun.intensity = 0.6; U.uSky.value.set(0.74, 0.74, 0.74); U.uGround.value.set(0.36, 0.35, 0.33);
+    // afternoon sun
+    renderer.setClearColor(0xd6dde6); standMat.uniforms.uCol.value.set(0x9ea4ad); seatMat.uniforms.uSeatCol.value.set(0x2451b3); roofMat.color.set(0x5d626b);
+    hemi.intensity = 0.8; sun.intensity = 0.7; U.uSky.value.set(0.52, 0.58, 0.68); U.uGround.value.set(0.3, 0.29, 0.26);
+    U.uSunCol.value.set(1.0, 0.93, 0.8); U.uFogCol.value.set(0.72, 0.8, 0.88); skyU.uZen.value.set(0.22, 0.44, 0.78); skyU.uGlow.value = 1;
+    TURF.uTurfA.value.set(0.12, 0.3, 0.08); TURF.uTurfB.value.set(0.22, 0.45, 0.13);
   }
 }
 
-setTheme(theme); buildSettingsRows(); updateReadouts(); requestAnimationFrame(loop);
+updateSun(); setTheme(theme); buildSettingsRows(); updateReadouts(); requestAnimationFrame(loop);
 window.__crowdsign = { get state() { return state; }, get crowd() { return C; }, camTo, settings, intro,
   advance(sec) { if (!C) return; const n = Math.ceil(sec / 0.05); for (let i = 0; i < n; i++) step(0.05); renderer.render(scene, camera); } };
 })();
