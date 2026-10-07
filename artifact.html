@@ -1,0 +1,532 @@
+<title>UICrowd</title>
+<style>
+  /* Layout: one pinned full-viewport stage; scroll progress drives the camera. Single committed look (cool studio grey). */
+  :root {
+    --paper: #d4d9da;
+    --ink: #17191a;
+    --ink-soft: #5d6567;
+    --night: #0e0f10;
+    --night-ink: #f1f3f3;
+    --night-soft: #9aa3a5;
+    --margin: clamp(20px, 2.8vw, 56px);
+    --font: "Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); }
+
+  /* Length of the dive. Larger = slower zoom. */
+  #stage { height: 700vh; position: relative; }
+  .pin { position: sticky; top: 0; height: 100vh; overflow: hidden; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+  .chrome { position: absolute; inset: 0; pointer-events: none; font-size: 12.5px; letter-spacing: .01em; }
+  .chrome > * { pointer-events: auto; }
+  .corner { position: absolute; display: flex; align-items: center; gap: 8px; color: var(--ink); }
+  .corner.bl, .corner.br { color: var(--ink-soft); font-size: 12px; }
+  .tl { top: var(--margin); left: var(--margin); }
+  .tr { top: var(--margin); right: var(--margin); }
+  .bl { bottom: var(--margin); left: var(--margin); }
+  .br { bottom: var(--margin); right: var(--margin); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); display: inline-block; }
+
+  .cta {
+    position: absolute; left: var(--margin); top: 0;
+    display: inline-flex; align-items: center; gap: 12px; height: 58px; padding: 0 26px;
+    border-radius: 999px; background: var(--ink); color: #fff; text-decoration: none; font-size: 15px;
+    transition: transform .25s ease, background .25s ease;
+  }
+  .cta:hover { transform: translateY(-2px); background: #000; }
+  .cta:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+  .meta { position: absolute; top: 0; color: var(--ink-soft); font-size: 12.5px; white-space: nowrap; }
+
+  .scroll-hint {
+    position: absolute; left: 50%; bottom: calc(var(--margin) - 4px); transform: translateX(-50%);
+    color: var(--ink-soft); font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .scroll-hint::after { content: ""; width: 1px; height: 34px; background: linear-gradient(var(--ink-soft), transparent); animation: drip 1.8s ease-in-out infinite; transform-origin: top; }
+  @keyframes drip { 0% { transform: scaleY(0); } 50% { transform: scaleY(1); } 100% { transform: scaleY(1); opacity: 0; } }
+
+  .after { min-height: 100vh; display: grid; align-content: center; gap: 12px; padding-block: 12vh; padding-inline: var(--margin); background: var(--night); color: var(--night-ink); }
+  .after h2 { margin: 0; font-size: clamp(40px, 8vw, 120px); letter-spacing: -.04em; line-height: .95; text-wrap: balance; }
+  .after p { margin: 0; color: var(--night-soft); max-width: 60ch; }
+  .after .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; }
+
+  @media (max-width: 640px) { .meta, .corner.bl, .corner.br { display: none; } .cta { height: 50px; padding: 0 22px; } }
+  @media (prefers-reduced-motion: reduce) { .scroll-hint::after { animation: none; } }
+</style>
+
+<main id="stage">
+  <div class="pin">
+    <canvas id="gl" aria-hidden="true"></canvas>
+    <h1 class="sr-only">UICrowd</h1>
+    <p class="sr-only">Dynamic use of HTML in canvas and audio to generate unique results.</p>
+    <div class="chrome" id="chrome">
+      <span class="corner tl">Playground</span>
+      <span class="corner tr"><i class="dot"></i>UICrowd · v0.1</span>
+      <a class="cta" id="cta" href="#next">Enter <span aria-hidden="true">↗</span></a>
+      <span class="meta" id="meta">Three.js · html-in-canvas</span>
+      <span class="corner bl">Built on the open web</span>
+      <span class="corner br">Docs · Changelog</span>
+      <span class="scroll-hint" id="hint">Scroll</span>
+    </div>
+  </div>
+</main>
+
+<section id="next" class="after">
+  <p class="eyebrow">Next section</p>
+  <h2>You're through the tile.</h2>
+  <p>Replace this block with the rest of the site.</p>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+'use strict';
+
+/* ───────────── Config ───────────── */
+const CONFIG = {
+  eyebrow: 'DYNAMIC HTML · IN CANVAS',
+  title: 'UICrowd',
+  sub: 'Dynamic use of HTML in canvas and audio to generate unique results.',
+  tilesAcross: 14,   // approx. tiles across the viewport
+  holeX: 0.68,       // where the held tile sits (0..1 of viewport width)
+  holeY: 0.50,
+  holeRadius: 0.30,  // hole radius as a fraction of tile size
+  hoverRadius: 2.2,  // hover influence, in tiles
+  fov: 35,
+};
+const FONT = '"Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif';
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('gl');
+const chrome = document.getElementById('chrome');
+const cta = document.getElementById('cta');
+const meta = document.getElementById('meta');
+const hint = document.getElementById('hint');
+
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+const hash = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+
+/* ───────────── Renderer ───────────── */
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); }
+catch (e) { console.warn('WebGL unavailable', e); return; }
+renderer.setClearColor(0xd4d9da);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CONFIG.fov, 1, 0.5, 30000);
+
+/* ───────────── State rebuilt on resize ───────────── */
+let W = 0, H = 0, S = 0, D = 0, dpr = 1;
+let tiles = null, plate = null, person = null, shiftX = 0, shiftY = 0;
+let hole = { x: 0, y: 0, index: -1 };
+const owned = []; // textures to dispose
+
+function layout() {
+  const left = Math.max(20, Math.min(56, W * 0.028));
+  const titleSize = Math.min(W * 0.17, Math.max(W * 0.095, 96), 260);
+  const titleY = H * 0.5 + titleSize * 0.3;
+  const subSize = Math.max(15, Math.min(22, W * 0.0115));
+  return {
+    left, titleSize, titleY,
+    eyebrowY: titleY - titleSize * 0.95,
+    subSize, subY: titleY + titleSize * 0.38,
+    subWidth: Math.min(W - left * 2, Math.max(300, W * 0.28)),
+    ctaY: titleY + titleSize * 0.38 + subSize * 1.45 * 2 + 30,
+  };
+}
+function wrap(g, text, x, y, maxW, lh) {
+  let line = '', row = 0;
+  for (const word of text.split(' ')) {
+    const test = line ? line + ' ' + word : word;
+    if (g.measureText(test).width > maxW && line) { g.fillText(line, x, y + row * lh); line = word; row++; }
+    else line = test;
+  }
+  g.fillText(line, x, y + row * lh);
+}
+function paintHero(withText) {
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  const g = c.getContext('2d');
+  g.scale(dpr, dpr);
+  const bg = g.createLinearGradient(0, 0, W * 0.4, H);
+  bg.addColorStop(0, '#d9dee3'); bg.addColorStop(0.5, '#d1d7d8'); bg.addColorStop(1, '#c5cac9');
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  if (withText) {
+    const L = layout();
+    g.fillStyle = '#5d6567';
+    g.font = `500 ${Math.max(11, W * 0.0065)}px ${FONT}`;
+    if ('letterSpacing' in g) g.letterSpacing = '0.08em';
+    g.fillText(CONFIG.eyebrow, L.left, L.eyebrowY);
+    g.fillStyle = '#17191a';
+    g.font = `700 ${L.titleSize}px ${FONT}`;
+    if ('letterSpacing' in g) g.letterSpacing = `${-0.045 * L.titleSize}px`;
+    g.fillText(CONFIG.title, L.left - L.titleSize * 0.03, L.titleY);
+    g.fillStyle = '#4b5355';
+    g.font = `400 ${L.subSize}px ${FONT}`;
+    if ('letterSpacing' in g) g.letterSpacing = '0px';
+    wrap(g, CONFIG.sub, L.left, L.subY, L.subWidth, L.subSize * 1.45);
+  }
+  return c;
+}
+function wallCanvas() {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  const r = g.createRadialGradient(256, 230, 20, 256, 256, 380);
+  r.addColorStop(0, '#e3e8e9'); r.addColorStop(0.55, '#cdd3d4'); r.addColorStop(1, '#a9b1b3');
+  g.fillStyle = r; g.fillRect(0, 0, 512, 512);
+  return c;
+}
+function shadowCanvas() {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  const r = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  r.addColorStop(0, 'rgba(40,48,52,0.38)'); r.addColorStop(1, 'rgba(40,48,52,0)');
+  g.fillStyle = r; g.fillRect(0, 0, 256, 256);
+  return c;
+}
+
+/* ───────────── The dummy person (all procedural) ───────────── */
+function makePerson() {
+  const skin = new THREE.MeshStandardMaterial({ color: 0xb07a52, roughness: 0.85 });
+  const shirt = new THREE.MeshStandardMaterial({ color: 0x5f8c8a, roughness: 0.95 });
+  const white = new THREE.MeshStandardMaterial({ color: 0xf4f1ea, roughness: 0.4 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1b1410, roughness: 0.5 });
+  const mouthM = new THREE.MeshStandardMaterial({ color: 0x5a2a22, roughness: 0.6 });
+  const sph = new THREE.SphereGeometry(1, 28, 20);
+  const mesh = (geo, mat, parent) => { const m = new THREE.Mesh(geo, mat); parent.add(m); return m; };
+
+  // Body parts live in a group scaled to the tile size (1 unit == 1 tile).
+  const root = new THREE.Group();
+  const head = new THREE.Group();
+  head.position.set(0, 0, -2);
+  root.add(head);
+
+  const skull = mesh(sph, skin, head); skull.scale.set(0.33, 0.37, 0.33);
+  for (const s of [-1, 1]) {
+    const ear = mesh(sph, skin, head); ear.scale.set(0.035, 0.07, 0.05); ear.position.set(s * 0.325, -0.01, -0.02);
+  }
+  const nose = mesh(sph, skin, head); nose.scale.set(0.05, 0.06, 0.055); nose.position.set(0, -0.04, 0.325);
+
+  const eyes = [], brows = [];
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Group(); eye.position.set(s * 0.125, 0.07, 0.275); head.add(eye);
+    mesh(sph, white, eye).scale.setScalar(0.062);
+    const pupil = mesh(sph, dark, eye); pupil.scale.setScalar(0.03); pupil.position.set(0, 0, 0.05);
+    eyes.push(eye);
+    const brow = mesh(new THREE.BoxGeometry(1, 1, 1), dark, head);
+    brow.scale.set(0.11, 0.02, 0.025); brow.position.set(s * 0.125, 0.19, 0.265); brow.rotation.z = s * -0.08;
+    brows.push(brow);
+  }
+  const mouth = mesh(new THREE.TorusGeometry(0.09, 0.013, 8, 24, Math.PI), mouthM, head);
+  mouth.position.set(0, -0.14, 0.305); mouth.rotation.z = Math.PI;
+
+  const neck = mesh(new THREE.CylinderGeometry(0.13, 0.15, 0.4, 20), skin, root); neck.position.set(0, -0.47, -2.02);
+  // Torso runs off the bottom of the frame so it never reads as a floating blob.
+  const torso = mesh(new THREE.CylinderGeometry(0.5, 0.62, 6, 28), shirt, root);
+  torso.scale.z = 0.55; torso.position.set(0, -3.72, -2.05);
+  const yoke = mesh(sph, shirt, root); yoke.scale.set(0.52, 0.2, 0.3); yoke.position.set(0, -0.75, -2.05);
+
+  // Shoulders, arms and hands are in world space (they chase the swaying tile).
+  const world = new THREE.Group();
+  const limbGeo = new THREE.CylinderGeometry(1, 1, 1, 14);
+  const arms = [-1, 1].map((side) => ({
+    side,
+    upper: mesh(limbGeo, shirt, world), fore: mesh(limbGeo, skin, world),
+    shoulder: mesh(sph, shirt, world), elbow: mesh(sph, skin, world),
+  }));
+  // Hands are parented to the held tile's frame: palm behind the edge, thumb pad on the front face.
+  const hands = [-1, 1].map((side) => {
+    const g = new THREE.Group();
+    const palm = mesh(sph, skin, g); palm.scale.set(0.075, 0.12, 0.06); palm.position.set(side * 0.5, -0.03, -0.035);
+    const thumb = mesh(sph, skin, g); thumb.scale.set(0.045, 0.085, 0.022); thumb.position.set(side * 0.455, 0.0, 0.028);
+    return g;
+  });
+  return { root, head, eyes, brows, mouth, world, arms, hands, nextBlink: 2.5, blink: 0 };
+}
+
+const UP = new THREE.Vector3(0, 1, 0), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _d = new THREE.Vector3();
+function setLimb(m, a, b, r) {
+  _d.subVectors(b, a); const len = _d.length();
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(UP, _d.normalize());
+  m.scale.set(r, len, r);
+}
+
+/* ───────────── Build ───────────── */
+function build() {
+  scene.traverse((o) => { o.geometry?.dispose?.(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose()); });
+  scene.clear();
+  owned.splice(0).forEach((t) => t.dispose());
+
+  W = innerWidth; H = innerHeight;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(W, H, false);
+  D = (H / 2) / Math.tan(THREE.MathUtils.degToRad(CONFIG.fov / 2));
+  camera.aspect = W / H; camera.updateProjectionMatrix();
+  S = Math.max(70, Math.min(170, Math.round(W / CONFIG.tilesAcross)));
+
+  const L = layout();
+  cta.style.top = `${L.ctaY}px`;
+  meta.style.top = `${L.ctaY + 20}px`;
+  meta.style.left = `calc(var(--margin) + ${cta.offsetWidth + 18}px)`;
+
+  const tex = (c) => { const t = new THREE.CanvasTexture(c); t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; owned.push(t); return t; };
+  const heroTex = tex(paintHero(true)), bgTex = tex(paintHero(false)), wallTex = tex(wallCanvas()), shTex = tex(shadowCanvas());
+
+  /* tiles */
+  const cols = Math.ceil(W / S) + 2, rows = Math.ceil(H / S) + 2, n = cols * rows;
+  const ox = -(cols * S) / 2 + S / 2, oy = -(rows * S) / 2 + S / 2;
+  const wantX = (CONFIG.holeX - 0.5) * W, wantY = (0.5 - CONFIG.holeY) * H;
+  let best = 0, bestD = 1e9;
+  const cx = new Float32Array(n), cy = new Float32Array(n), rect = new Float32Array(n * 4), holeAttr = new Float32Array(n);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    cx[i] = ox + c * S; cy[i] = oy + r * S;
+    const d = Math.hypot(cx[i] - wantX, cy[i] - wantY);
+    if (d < bestD) { bestD = d; best = i; }
+    rect[i * 4] = (cx[i] - S / 2 + W / 2) / W; rect[i * 4 + 1] = (cy[i] - S / 2 + H / 2) / H;
+    rect[i * 4 + 2] = S / W; rect[i * 4 + 3] = S / H;
+  }
+  holeAttr[best] = 1;
+  hole = { x: cx[best], y: cy[best], index: best };
+
+  const geo = new THREE.PlaneBufferGeometry(1, 1);
+  geo.setAttribute('aRect', new THREE.InstancedBufferAttribute(rect, 4));
+  geo.setAttribute('aHole', new THREE.InstancedBufferAttribute(holeAttr, 1));
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    uniforms: { uTex: { value: heroTex }, uHole: { value: CONFIG.holeRadius } },
+    vertexShader: `
+      attribute vec4 aRect; attribute float aHole;
+      varying vec2 vUv; varying vec2 vTex; varying float vHole; varying float vShade;
+      void main() {
+        vUv = uv; vHole = aHole;
+        vTex = aRect.xy + uv * aRect.zw;
+        vec3 n = normalize(mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
+        vec3 L = normalize(vec3(-0.45, 0.65, 0.62));
+        vShade = 1.0 + (dot(n, L) - L.z) * 0.55;
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D uTex; uniform float uHole;
+      varying vec2 vUv; varying vec2 vTex; varying float vHole; varying float vShade;
+      void main() {
+        if (!gl_FrontFacing) { gl_FragColor = vec4(vec3(0.075, 0.08, 0.085), 1.0); return; }
+        vec3 col = texture2D(uTex, vTex).rgb;
+        if (vHole > 0.5) {
+          float d = length(vUv - 0.5);
+          if (d < uHole) discard;
+          col = mix(col, vec3(0.97), 0.55);
+          col *= mix(0.62, 1.0, smoothstep(uHole, uHole + 0.045, d));
+        }
+        gl_FragColor = vec4(col * vShade, 1.0);
+      }`,
+  });
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  tiles = { mesh, n, cx, cy,
+    pos: new Float32Array(n * 3), vel: new Float32Array(n * 3),
+    rot: new Float32Array(n * 3), rvel: new Float32Array(n * 3) };
+
+  /* plate: same grey as the hero, sits just behind the tiles, dissolves as you scroll */
+  const bz = -0.05 * S, bScale = (D - bz) / D;
+  plate = new THREE.Mesh(
+    new THREE.PlaneBufferGeometry(W * bScale * 1.6, H * bScale * 1.6),
+    new THREE.ShaderMaterial({
+      transparent: true,
+      uniforms: { uTex: { value: bgTex }, uC: { value: new THREE.Vector2(hole.x, hole.y) }, uR: { value: S * (CONFIG.holeRadius + 0.07) }, uO: { value: 1 } },
+      vertexShader: `varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+      fragmentShader: `
+        uniform sampler2D uTex; uniform vec2 uC; uniform float uR; uniform float uO;
+        varying vec2 vP;
+        void main() {
+          vec2 world = vP / ${bScale.toFixed(5)};
+          if (length(world - uC) < uR) discard;
+          vec2 uv = world / vec2(${W.toFixed(1)}, ${H.toFixed(1)}) + 0.5;
+          gl_FragColor = vec4(texture2D(uTex, clamp(uv, 0.0, 1.0)).rgb, uO);
+        }`,
+    }));
+  plate.position.z = bz;
+  scene.add(plate);
+
+  /* the room behind the wall of tiles */
+  const wz = -7 * S, wall = new THREE.Mesh(
+    new THREE.PlaneBufferGeometry(W * 5, H * 5), new THREE.MeshBasicMaterial({ map: wallTex }));
+  wall.position.set(hole.x, hole.y, wz); scene.add(wall);
+  const blob = new THREE.Mesh(
+    new THREE.PlaneBufferGeometry(S * 7, S * 9), new THREE.MeshBasicMaterial({ map: shTex, transparent: true, depthWrite: false }));
+  blob.position.set(hole.x + S * 0.9, hole.y - S * 1.2, wz + 2); scene.add(blob);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const key = new THREE.DirectionalLight(0xfff4e8, 0.85); key.position.set(-S * 2, S * 3, S * 5); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xdfeaff, 0.25); fill.position.set(S * 3, -S, S * 2); scene.add(fill);
+
+  /* person: centred on the ray from the resting camera through the hole, so the face sits in the hole at rest */
+  person = makePerson();
+  shiftX = hole.x * 2 * S / D; shiftY = hole.y * 2 * S / D;
+  person.root.position.set(hole.x + shiftX, hole.y + shiftY, 0);
+  person.root.scale.setScalar(S);
+  scene.add(person.root, person.world);
+  person.hands.forEach((h) => scene.add(h));
+}
+
+/* ───────────── Input ───────────── */
+const mouse = { x: 1e5, y: 1e5, vx: 0, vy: 0, active: false };
+addEventListener('pointermove', (e) => {
+  const x = e.clientX - W / 2, y = -(e.clientY - H / 2);
+  if (mouse.active) { mouse.vx += x - mouse.x; mouse.vy += y - mouse.y; }
+  mouse.x = x; mouse.y = y; mouse.active = true;
+}, { passive: true });
+const leave = () => { mouse.active = false; mouse.x = mouse.y = 1e5; };
+document.addEventListener('mouseleave', leave);
+addEventListener('blur', leave);
+
+let targetP = 0, p = 0;
+function readScroll() {
+  const max = Math.max(1, stage.offsetHeight - innerHeight);
+  targetP = clamp(-stage.getBoundingClientRect().top / max);
+}
+addEventListener('scroll', readScroll, { passive: true });
+addEventListener('resize', () => { build(); readScroll(); });
+
+/* ───────────── Frame loop ───────────── */
+const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e4 = new THREE.Euler(), v3 = new THREE.Vector3(), s3 = new THREE.Vector3();
+const tileQ = new THREE.Quaternion(), tileP = new THREE.Vector3();
+let last = performance.now();
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!tiles) return;
+
+  p += (targetP - p) * (1 - Math.pow(0.0015, dt));
+  if (Math.abs(targetP - p) < 1e-4) p = targetP;
+  const scatter = smooth(0.0, 0.5, p);
+  const t = now / 1000;
+
+  const speed = clamp(Math.hypot(mouse.vx, mouse.vy) / 40);
+  mouse.vx = mouse.vy = 0;
+  const R = S * CONFIG.hoverRadius;
+  const hoverGain = reduceMotion ? 0.35 : 1;
+  const hoverOn = mouse.active ? 1 - smooth(0.02, 0.2, p) : 0;
+  const { pos, vel, rot, rvel, cx, cy, n } = tiles;
+  const K = 70, C = 10;
+
+  for (let i = 0; i < n; i++) {
+    const i3 = i * 3, isHole = i === hole.index;
+    const h1 = hash(i), h2 = hash(i + 91.7), h3 = hash(i + 17.3);
+    let tx = 0, ty = 0, tz = 0, trx = 0, tryy = 0, trz = 0;
+
+    const dx = cx[i] - mouse.x, dy = cy[i] - mouse.y;
+    const dist = Math.hypot(dx, dy) + 0.001;
+    const f = Math.exp(-(dist * dist) / (R * R)) * hoverOn * hoverGain;
+    if (f > 0.002 && !isHole) {
+      tz += f * S * (0.35 + 0.5 * h1);
+      tx += (dx / dist) * f * S * 0.22; ty += (dy / dist) * f * S * 0.22;
+      trx += f * ((dy / R) * 1.1 + (h2 - 0.5) * 0.9);
+      tryy += f * (-(dx / R) * 1.1 + (h3 - 0.5) * 0.9) * (1 + speed * 1.4);
+      trz += f * (h1 - 0.5) * (0.7 + speed * 1.2);
+    }
+    if (!isHole && scatter > 0) {
+      const ex = cx[i] - hole.x, ey = cy[i] - hole.y, el = Math.hypot(ex, ey) + 0.001;
+      const k = scatter * scatter * (0.7 + h1) * S * 9;
+      tx += (ex / el) * k; ty += (ey / el) * k;
+      tz += scatter * S * (h2 * 5 - 1.2);
+      trx += scatter * (h1 - 0.5) * 6; tryy += scatter * (h2 - 0.5) * 6; trz += scatter * (h3 - 0.5) * 5;
+    }
+    if (isHole) { // hand-held sway, settling as the camera closes in
+      const sway = (1 - smooth(0.25, 0.7, p)) * (reduceMotion ? 0.3 : 1);
+      trx += Math.sin(t * 1.1) * 0.035 * sway;
+      tryy += Math.cos(t * 0.9) * 0.045 * sway;
+      trz += Math.sin(t * 0.7 + 1.3) * 0.03 * sway;
+      ty += Math.sin(t * 1.3) * S * 0.012 * sway;
+    }
+    for (let a = 0; a < 3; a++) {
+      const tp = a === 0 ? tx : a === 1 ? ty : tz, tr = a === 0 ? trx : a === 1 ? tryy : trz;
+      vel[i3 + a] += (K * (tp - pos[i3 + a]) - C * vel[i3 + a]) * dt; pos[i3 + a] += vel[i3 + a] * dt;
+      rvel[i3 + a] += (K * 0.8 * (tr - rot[i3 + a]) - C * 0.9 * rvel[i3 + a]) * dt; rot[i3 + a] += rvel[i3 + a] * dt;
+    }
+    v3.set(cx[i] + pos[i3], cy[i] + pos[i3 + 1], pos[i3 + 2]);
+    e4.set(rot[i3], rot[i3 + 1], rot[i3 + 2], 'XYZ');
+    q.setFromEuler(e4);
+    s3.set(S, S, 1);
+    m4.compose(v3, q, s3);
+    tiles.mesh.setMatrixAt(i, m4);
+    if (isHole) { tileP.copy(v3); tileQ.copy(q); }
+  }
+  tiles.mesh.instanceMatrix.needsUpdate = true;
+
+  /* Hands ride the held tile; arms reach back to the shoulders. */
+  const P = person, rp = P.root.position;
+  const letGo = Math.max(0.001, 1 - smooth(0.25, 0.38, p)); // hands release the tile as the camera slips through
+  P.hands.forEach((h) => { h.position.copy(tileP); h.quaternion.copy(tileQ); h.scale.setScalar(S * letGo); });
+  P.arms.forEach((arm) => {
+    const s = arm.side;
+    const hand = new THREE.Vector3(s * 0.5, -0.04, -0.04).multiplyScalar(S).applyQuaternion(tileQ).add(tileP);
+    const shoulder = new THREE.Vector3(rp.x + s * 0.5 * S, rp.y - 0.82 * S, rp.z - 2.05 * S);
+    const elbow = shoulder.clone().add(hand).multiplyScalar(0.5);
+    elbow.x += s * 0.28 * S; elbow.y -= 0.42 * S;
+    setLimb(arm.upper, shoulder, elbow, 0.15 * S);
+    setLimb(arm.fore, elbow, hand, 0.095 * S);
+    arm.shoulder.position.copy(shoulder); arm.shoulder.scale.setScalar(0.17 * S);
+    arm.elbow.position.copy(elbow); arm.elbow.scale.setScalar(0.1 * S);
+  });
+
+  /* Face: tracks the camera, blinks, smiles as we arrive. */
+  P.head.lookAt(camera.position);
+  const look = P.head.quaternion.clone();
+  P.head.quaternion.identity().slerp(look, 0.5);
+  P.head.rotateZ(Math.sin(t * 0.8) * 0.03);
+  if (t > P.nextBlink) { P.blink = 0.14; P.nextBlink = t + 2.2 + Math.random() * 3; }
+  P.blink = Math.max(0, P.blink - dt);
+  const eyeY = P.blink > 0 ? 0.12 : 1;
+  P.eyes.forEach((e) => { e.scale.y += (eyeY - e.scale.y) * 0.6; });
+  const arrive = smooth(0.8, 1, p);
+  P.mouth.scale.y = 0.35 + 0.65 * arrive;
+  P.brows.forEach((b) => { b.position.y = 0.19 + 0.025 * arrive; });
+
+  /* Plate dissolves → the room, the person and the arms behind the tiles are revealed. */
+  const o = 1 - smooth(0.06, 0.38, p);
+  plate.material.uniforms.uO.value = o;
+  plate.visible = o > 0.003;
+
+  /* Camera: exponential dolly toward the hole, then straight through it to the face. */
+  const SPLIT = 0.68, endDist = 0.06 * S, zEnd = -2 * S + 1.75 * S;
+  let cz, k;
+  if (p < SPLIT) {
+    const t1 = p / SPLIT;
+    cz = D * Math.pow(endDist / D, easeInOut(t1) * 0.5 + t1 * 0.5);
+    k = smooth(0.0, 0.55, t1);
+  } else {
+    cz = endDist + (zEnd - endDist) * easeInOut((p - SPLIT) / (1 - SPLIT));
+    k = 1;
+  }
+  const settle = smooth(0.7, 1, p);
+  const camX = hole.x * k + shiftX * settle, camY = hole.y * k + shiftY * settle;
+  camera.position.set(camX, camY, cz);
+  camera.lookAt(camX, camY, -1e4);
+
+  const fade = 1 - smooth(0.0, 0.14, p);
+  chrome.style.opacity = fade.toFixed(3);
+  chrome.style.visibility = fade <= 0.001 ? 'hidden' : 'visible';
+  hint.style.opacity = (1 - smooth(0.0, 0.04, p)).toFixed(3);
+
+  renderer.render(scene, camera);
+}
+
+build();
+readScroll();
+p = targetP;
+requestAnimationFrame(frame);
+window.__uicrowd = { setProgress(v) { targetP = clamp(v); p = targetP; } };
+})();
+</script>
