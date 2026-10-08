@@ -1,12 +1,23 @@
 # UICrowd
-dynamic use of HTML in canvas and audio to generate unique results
+Dynamic use of HTML in canvas and audio to generate unique results.
 
-## Opening sequence
+## Opening sequence (`artifact.src.html`)
 
-`index.html` + `main.js` + `style.css` — a Three.js hero (no build step; three is vendored in `vendor/`).
+A wall of tiles over a dark underlayer (three.js, r128).
 
-- **Hover:** the hero type is painted to a canvas and sliced across a grid of tiles. Tiles near the pointer lift, tilt and drift apart (spring physics, instanced mesh).
-- **Scroll:** tiles peel away from one special tile (the "held" one) which has a hole cut through it. The camera dollies into the hole until it fills the view, then the video behind recedes to full frame. The clip (`assets/reveal.mp4`, WebM fallback) is scrubbed by scroll, so the paper drops and the person is revealed.
-- Tune the look in the `CONFIG` block at the top of `main.js` (copy, tile count, hole position/size). Scroll length is `#stage { height }` in `style.css`.
+- **Hover:** the pointer is an attractor. Tiles are drawn toward it, turn to face it and stack at different depths, exposing the dark underlayer behind them. Each tile has its own pull, so the swarm stays loose.
+- **The held tile:** one tile on the right is held from behind by a character who is fully hidden. Hover it (it lifts and a tag appears), then **click or scroll**.
+- **Sequence:** the hands let go, the tile drops out of the wall, the character looks up, and the camera dives through the gap to a close-up. Scroll is locked while it plays and released at the end. `Replay` resets it.
+- **Rig:** the stand-in is the Mixamo "Xbot" mannequin from the three.js examples (`assets/Xbot.glb`), with a full finger rig. Arms use analytic two-bone IK, the palms are oriented from the bone geometry with the wrist twist shared into the forearm, and fingers are posed by curl plus CCD for the thumb. Swap in your own Mixamo-named rig by replacing the GLB.
 
-Run locally with any static server that supports HTTP Range requests (needed for video seeking), e.g. `npx http-server -c-1`. Python's `http.server` does not support Range, so the video won't scrub there.
+Tune the look in the `CONFIG` block at the top of the script (copy, tile count, held-tile position, attractor reach/pull).
+
+## Build
+
+`artifact.html` is a single file with the model inlined as base64:
+
+```
+python3 tools/build_artifact.py
+```
+
+For local development open `artifact.src.html` through a static server (it loads `assets/Xbot.glb` over HTTP), e.g. `npx http-server -c-1`.

@@ -1,0 +1,651 @@
+<title>UICrowd</title>
+<style>
+  /* Layout: one 100vh stage. Light tile wall over a dark underlayer; a hidden character behind one held tile. */
+  :root {
+    --paper: #d4d9da;
+    --ink: #17191a;
+    --ink-soft: #5d6567;
+    --night: #0b0c0e;
+    --night-ink: #f1f3f3;
+    --night-soft: #9aa3a5;
+    --margin: clamp(20px, 2.8vw, 56px);
+    --font: "Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--night); color: var(--ink); font-family: var(--font); }
+
+  .stage { position: relative; height: 100vh; overflow: hidden; background: #060708; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: pan-y; }
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+  .chrome { position: absolute; inset: 0; pointer-events: none; font-size: 12.5px; letter-spacing: .01em; transition: opacity .5s ease; }
+  .chrome > * { pointer-events: auto; }
+  .corner { position: absolute; display: flex; align-items: center; gap: 8px; color: var(--ink); }
+  .corner.bl, .corner.br { color: var(--ink-soft); font-size: 12px; }
+  .tl { top: var(--margin); left: var(--margin); }
+  .tr { top: var(--margin); right: var(--margin); }
+  .bl { bottom: var(--margin); left: var(--margin); }
+  .br { bottom: var(--margin); right: var(--margin); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); display: inline-block; }
+
+  .cta {
+    position: absolute; left: var(--margin); top: 0; display: inline-flex; align-items: center; gap: 12px;
+    height: 58px; padding: 0 26px; border: 0; border-radius: 999px; background: var(--ink); color: #fff;
+    font: inherit; font-size: 15px; cursor: pointer; transition: transform .25s ease, background .25s ease;
+  }
+  .cta:hover { transform: translateY(-2px); background: #000; }
+  .cta:focus-visible, .replay:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+  .meta { position: absolute; top: 0; color: var(--ink-soft); font-size: 12.5px; white-space: nowrap; }
+  .find { position: absolute; left: 50%; bottom: calc(var(--margin) - 2px); transform: translateX(-50%); color: var(--ink-soft); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; }
+
+  /* Tag that follows the held tile */
+  .tag {
+    position: absolute; left: 0; top: 0; pointer-events: none; padding: 7px 12px; border-radius: 999px;
+    background: var(--ink); color: #fff; font-size: 12px; letter-spacing: .02em; white-space: nowrap;
+    opacity: 0; transform: translate(-50%, 0) translateY(6px); transition: opacity .25s ease, transform .25s ease;
+  }
+  .tag.on { opacity: 1; transform: translate(-50%, 0); }
+  .tag.nudge { animation: nudge .9s ease; }
+  @keyframes nudge { 0%,100% { translate: 0 0; } 20% { translate: -5px 0; } 40% { translate: 5px 0; } 60% { translate: -3px 0; } 80% { translate: 3px 0; } }
+
+  .loading { position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8a9396; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .loading.on { opacity: 1; }
+
+  .after-bar { position: absolute; inset: auto 0 0 0; padding: var(--margin); display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; color: #aab2b4; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; opacity: 0; transition: opacity .6s ease; pointer-events: none; }
+  .after-bar.on { opacity: 1; }
+  .replay { pointer-events: auto; background: rgba(255,255,255,.08); color: #e8ecec; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; padding: 10px 18px; font: inherit; letter-spacing: .08em; cursor: pointer; }
+  .replay:hover { background: rgba(255,255,255,.16); }
+
+  .next { min-height: 100vh; display: grid; align-content: center; gap: 12px; padding-block: 12vh; padding-inline: var(--margin); background: var(--night); color: var(--night-ink); }
+  .next h2 { margin: 0; font-size: clamp(40px, 8vw, 120px); letter-spacing: -.04em; line-height: .95; text-wrap: balance; }
+  .next p { margin: 0; color: var(--night-soft); max-width: 60ch; }
+  .next .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; }
+
+  @media (max-width: 640px) { .meta, .corner.bl, .corner.br, .find { display: none; } .cta { height: 50px; padding: 0 22px; } }
+</style>
+
+<main>
+  <section class="stage" id="stage">
+    <canvas id="gl" aria-hidden="true"></canvas>
+    <h1 class="sr-only">UICrowd</h1>
+    <p class="sr-only">Dynamic use of HTML in canvas and audio to generate unique results.</p>
+    <div class="chrome" id="chrome">
+      <span class="corner tl">Playground</span>
+      <span class="corner tr"><i class="dot"></i>UICrowd · v0.1</span>
+      <button class="cta" id="cta" type="button">Enter <span aria-hidden="true">↗</span></button>
+      <span class="meta" id="meta">Three.js · html-in-canvas</span>
+      <span class="corner bl">Built on the open web</span>
+      <span class="corner br">Docs · Changelog</span>
+      <span class="find">Find the tile that is being held</span>
+    </div>
+    <div class="tag" id="tag">Click or scroll</div>
+    <div class="loading" id="loading">Waking the character…</div>
+    <div class="after-bar" id="afterbar"><span>Scroll</span><button class="replay" id="replay" type="button">Replay</button></div>
+  </section>
+  <section class="next" id="next">
+    <p class="eyebrow">Next section</p>
+    <h2>You're through the tile.</h2>
+    <p>Replace this block with the rest of the site.</p>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+/* Stand-in character: Mixamo "Xbot" mannequin (from the three.js examples), full finger rig. Replaced at build time. */
+const MODEL_B64 = '__MODEL_B64__';
+</script>
+<script>
+(() => {
+'use strict';
+
+/* ───────────── Config ───────────── */
+const CONFIG = {
+  eyebrow: 'DYNAMIC HTML · IN CANVAS',
+  title: 'UICrowd',
+  sub: 'Dynamic use of HTML in canvas and audio to generate unique results.',
+  tilesAcross: 14,
+  holeX: 0.70, holeY: 0.50,   // where the held tile sits (fraction of viewport)
+  attractRadius: 2.8,         // pointer attractor reach, in tiles
+  attractPull: 0.5,          // how far tiles are drawn toward the pointer (0..1)
+  fov: 35,
+  tileMeters: 0.35,           // physical size of a tile; sets the character's scale
+};
+const FONT = '"Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif';
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (id) => document.getElementById(id);
+const stage = $('stage'), canvas = $('gl'), chrome = $('chrome'), cta = $('cta'), meta = $('meta');
+const tag = $('tag'), loadingEl = $('loading'), afterBar = $('afterbar');
+
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+const lerp = (a, b, t) => a + (b - a) * t;
+const hash = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+
+/* ───────────── Renderer ───────────── */
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); }
+catch (e) { console.warn('WebGL unavailable', e); return; }
+renderer.outputEncoding = THREE.sRGBEncoding;  // affects lit materials only; the tile shader writes raw colour
+renderer.setClearColor(0x050607);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CONFIG.fov, 1, 0.5, 30000);
+
+/* ───────────── Layout / hero paint ───────────── */
+let W = 0, H = 0, S = 0, D = 0, K = 1, dpr = 1;
+let tiles = null, plate = null, rig = null, hole = { x: 0, y: 0, index: -1 };
+const owned = [];
+
+function layout() {
+  const left = Math.max(20, Math.min(56, W * 0.028));
+  const titleSize = Math.min(W * 0.17, Math.max(W * 0.095, 96), 260);
+  const titleY = H * 0.5 + titleSize * 0.3;
+  const subSize = Math.max(15, Math.min(22, W * 0.0115));
+  return { left, titleSize, titleY, eyebrowY: titleY - titleSize * 0.95, subSize, subY: titleY + titleSize * 0.38,
+    subWidth: Math.min(W - left * 2, Math.max(300, W * 0.28)), ctaY: titleY + titleSize * 0.38 + subSize * 1.45 * 2 + 30 };
+}
+function wrap(g, text, x, y, maxW, lh) {
+  let line = '', row = 0;
+  for (const word of text.split(' ')) {
+    const test = line ? line + ' ' + word : word;
+    if (g.measureText(test).width > maxW && line) { g.fillText(line, x, y + row * lh); line = word; row++; } else line = test;
+  }
+  g.fillText(line, x, y + row * lh);
+}
+function paintHero() {
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  const g = c.getContext('2d'); g.scale(dpr, dpr);
+  const bg = g.createLinearGradient(0, 0, W * 0.4, H);
+  bg.addColorStop(0, '#dde2e6'); bg.addColorStop(0.5, '#d3d9da'); bg.addColorStop(1, '#c5cac9');
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  const L = layout(), ls = 'letterSpacing' in g;
+  g.fillStyle = '#5d6567'; g.font = `500 ${Math.max(11, W * 0.0065)}px ${FONT}`; if (ls) g.letterSpacing = '0.08em';
+  g.fillText(CONFIG.eyebrow, L.left, L.eyebrowY);
+  g.fillStyle = '#17191a'; g.font = `700 ${L.titleSize}px ${FONT}`; if (ls) g.letterSpacing = `${-0.045 * L.titleSize}px`;
+  g.fillText(CONFIG.title, L.left - L.titleSize * 0.03, L.titleY);
+  g.fillStyle = '#4b5355'; g.font = `400 ${L.subSize}px ${FONT}`; if (ls) g.letterSpacing = '0px';
+  wrap(g, CONFIG.sub, L.left, L.subY, L.subWidth, L.subSize * 1.45);
+  return c;
+}
+function backdropCanvas() {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  const r = g.createRadialGradient(256, 210, 10, 256, 256, 330);
+  r.addColorStop(0, '#1b2024'); r.addColorStop(0.5, '#0b0d0f'); r.addColorStop(1, '#030404');
+  g.fillStyle = r; g.fillRect(0, 0, 512, 512);
+  return c;
+}
+
+/* ───────────── Rig: Mixamo skeleton, analytic IK for arms, curl/CCD for hands ───────────── */
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const AX = V(1, 0, 0), AY = V(0, 1, 0);
+const _vm = new THREE.Matrix4();
+function basisQ(f, n) {
+  const fn = f.clone().normalize();
+  const nn = n.clone().sub(fn.clone().multiplyScalar(n.dot(fn))).normalize();  // Gram-Schmidt: keep n ⟂ f
+  const c = new THREE.Vector3().crossVectors(fn, nn);
+  return new THREE.Quaternion().setFromRotationMatrix(_vm.makeBasis(fn, nn, c));
+}
+const worldQ = (b) => b.getWorldQuaternion(new THREE.Quaternion());
+const worldP = (b) => b.getWorldPosition(new THREE.Vector3());
+function applyWorldRot(bone, dq) {                 // rotate a bone about its own origin, in world space
+  const pq = worldQ(bone.parent);
+  bone.quaternion.copy(pq.clone().invert().multiply(dq).multiply(pq).multiply(bone.quaternion));
+  bone.updateMatrixWorld(true);
+}
+function setWorldQuat(bone, q) {
+  bone.quaternion.copy(worldQ(bone.parent).invert().multiply(q));
+  bone.updateMatrixWorld(true);
+}
+const rotAbout = (axis, ang) => new THREE.Quaternion().setFromAxisAngle(axis.clone().normalize(), ang);
+
+function buildRig(gltf) {
+  const model = gltf.scene, bones = {};
+  model.traverse((o) => {
+    if (o.isBone) bones[o.name.replace(/^mixamorig:?/, '')] = o;
+    if (o.isMesh) {
+      o.frustumCulled = false;
+      // Restyle the mannequin: matte warm clay body, graphite joints.
+      const joint = /joint/i.test(o.name) || /joint/i.test(o.material?.name || '');
+      o.material = new THREE.MeshStandardMaterial({ color: joint ? 0x23262a : 0xb4ada2, roughness: joint ? 0.5 : 0.62, metalness: 0.0, skinning: true });
+    }
+  });
+  model.updateMatrixWorld(true);
+  const bind = {};
+  for (const n in bones) bind[n] = bones[n].quaternion.clone();
+  const hands = {};
+  for (const side of ['Left', 'Right']) {
+    const hand = bones[side + 'Hand'];
+    const hq = worldQ(hand), hp = worldP(hand);
+    const f = worldP(bones[side + 'HandMiddle1']).sub(hp).normalize();
+    const n = V(0, -1, 0);                                   // T-pose palms face down
+    hands[side] = { hq, fB: f, nB: n, qB: basisQ(f, n), nLocal: n.clone().applyQuaternion(hq.clone().invert()), fLocal: f.clone().applyQuaternion(hq.clone().invert()) };
+  }
+  const len = {};
+  for (const side of ['Left', 'Right']) {
+    len[side] = [worldP(bones[side + 'ForeArm']).distanceTo(worldP(bones[side + 'Arm'])), worldP(bones[side + 'Hand']).distanceTo(worldP(bones[side + 'ForeArm']))];
+  }
+  const root = new THREE.Group();
+  root.add(model);
+  return { root, model, bones, bind, hands, len, headBind: worldP(bones.Head), skinBox: null };
+}
+
+function resetPose() { for (const n in rig.bones) rig.bones[n].quaternion.copy(rig.bind[n]); rig.root.updateMatrixWorld(true); }
+
+/* Two-bone IK: put the wrist at T, elbow toward `pole`. Returns the (possibly clamped) wrist position. */
+function solveArm(side, T, pole) {
+  const B = rig.bones, A = B[side + 'Arm'], F = B[side + 'ForeArm'], Hd = B[side + 'Hand'];
+  const pa = worldP(A), pb = worldP(F), pc = worldP(Hd);
+  const l1 = pb.distanceTo(pa), l2 = pc.distanceTo(pb);
+  const to = T.clone().sub(pa), dist = Math.max(1e-4, to.length()), dir = to.clone().divideScalar(dist);
+  const d = Math.min(dist, (l1 + l2) * 0.998);
+  const x = (l1 * l1 - l2 * l2 + d * d) / (2 * d), h = Math.sqrt(Math.max(0, l1 * l1 - x * x));
+  const pv = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir))).normalize();
+  const E = pa.clone().add(dir.clone().multiplyScalar(x)).add(pv.multiplyScalar(h));
+  applyWorldRot(A, new THREE.Quaternion().setFromUnitVectors(pb.clone().sub(pa).normalize(), E.clone().sub(pa).normalize()));
+  const Tc = pa.clone().add(dir.clone().multiplyScalar(d));
+  const pb2 = worldP(F), pc2 = worldP(Hd);
+  applyWorldRot(F, new THREE.Quaternion().setFromUnitVectors(pc2.clone().sub(pb2).normalize(), Tc.clone().sub(pb2).normalize()));
+  return Tc;
+}
+/* Orient the palm (fingers along fDes, palm facing nDes) and push 60% of the twist into the forearm so the wrist never candy-wraps. */
+function orientHand(side, fDes, nDes) {
+  const H_ = rig.hands[side], B = rig.bones, F = B[side + 'ForeArm'], Hd = B[side + 'Hand'];
+  const target = basisQ(fDes, nDes).multiply(H_.qB.clone().invert()).multiply(H_.hq);
+  const delta = target.clone().multiply(worldQ(Hd).invert());
+  const u = worldP(Hd).sub(worldP(F)).normalize();
+  const vp = V(delta.x, delta.y, delta.z), s = vp.dot(u);
+  let ang = 2 * Math.atan2(s, delta.w); if (ang > Math.PI) ang -= 2 * Math.PI; if (ang < -Math.PI) ang += 2 * Math.PI;
+  applyWorldRot(F, rotAbout(u, ang * 0.6));
+  setWorldQuat(Hd, target);
+  return target;
+}
+const CURL_MAX = [1.2, 1.45, 1.05];
+/* curls = [index, middle, ring, pinky] 0..1 flexion toward the palm; spread widens the fan; thumbT blends the thumb into a soft pinch against the index. */
+function poseFingers(side, handQ, curls, spread, thumbT, phase) {
+  const H_ = rig.hands[side], B = rig.bones;
+  const fW = H_.fLocal.clone().applyQuaternion(handQ), nW = H_.nLocal.clone().applyQuaternion(handQ);
+  const flex = new THREE.Vector3().crossVectors(fW, nW).normalize();
+  const sideDir = worldP(B[side + 'HandIndex1']).sub(worldP(B[side + 'HandPinky1'])).normalize();
+  const sgn = Math.sign(new THREE.Vector3().crossVectors(nW, fW).dot(sideDir)) || 1;
+  ['Index', 'Middle', 'Ring', 'Pinky'].forEach((name, i) => {
+    const c = curls[i] + Math.sin(phase * 1.3 + i * 1.7) * 0.025;
+    const sp = (1.5 - i) * -0.5 * spread * sgn * 0.22;               // fan: index toward thumb side, pinky away
+    for (let j = 1; j <= 3; j++) {
+      const b = B[side + 'Hand' + name + j];
+      if (j === 1) applyWorldRot(b, rotAbout(nW, sp));
+      applyWorldRot(b, rotAbout(flex, c * CURL_MAX[j - 1]));
+    }
+  });
+  if (thumbT > 0.001) {
+    const chain = [B[side + 'HandThumb1'], B[side + 'HandThumb2'], B[side + 'HandThumb3']], tip = B[side + 'HandThumb4'];
+    const pre = chain.map((b) => b.quaternion.clone());
+    const goal = worldP(B[side + 'HandIndex2']).add(nW.clone().multiplyScalar(0.016 * K));
+    for (let it = 0; it < 14; it++) for (let j = 2; j >= 0; j--) {
+      const jp = worldP(chain[j]);
+      const q = new THREE.Quaternion().setFromUnitVectors(worldP(tip).sub(jp).normalize(), goal.clone().sub(jp).normalize());
+      applyWorldRot(chain[j], new THREE.Quaternion().slerp(q, 0.55));
+    }
+    chain.forEach((b, j) => { b.quaternion.slerpQuaternions(pre[j], b.quaternion, thumbT); });
+    chain[0].updateMatrixWorld(true);
+  }
+}
+
+/* ───────────── Build ───────────── */
+function build() {
+  scene.traverse((o) => { if (rig && rig.root.getObjectById(o.id)) return; o.geometry?.dispose?.(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose()); });
+  for (const c of [...scene.children]) if (!rig || c !== rig.root) scene.remove(c);
+  owned.splice(0).forEach((t) => t.dispose());
+
+  W = innerWidth; H = innerHeight;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr); renderer.setSize(W, H, false);
+  D = (H / 2) / Math.tan(THREE.MathUtils.degToRad(CONFIG.fov / 2));
+  camera.aspect = W / H; camera.updateProjectionMatrix();
+  S = Math.max(70, Math.min(170, Math.round(W / CONFIG.tilesAcross)));
+  K = S / CONFIG.tileMeters;                       // pixels per metre
+
+  const L = layout();
+  cta.style.top = `${L.ctaY}px`;
+  meta.style.top = `${L.ctaY + 20}px`;
+  meta.style.left = `calc(var(--margin) + ${cta.offsetWidth + 18}px)`;
+
+  const tex = (c) => { const t = new THREE.CanvasTexture(c); t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; owned.push(t); return t; };
+  const heroTex = tex(paintHero());
+
+  /* tiles */
+  const cols = Math.ceil(W / S) + 4, rows = Math.ceil(H / S) + 4, n = cols * rows;
+  const ox = -(cols * S) / 2 + S / 2, oy = -(rows * S) / 2 + S / 2;
+  const wantX = (CONFIG.holeX - 0.5) * W, wantY = (0.5 - CONFIG.holeY) * H;
+  let best = 0, bestD = 1e9;
+  const cx = new Float32Array(n), cy = new Float32Array(n), rect = new Float32Array(n * 4), heldAttr = new Float32Array(n);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    cx[i] = ox + c * S; cy[i] = oy + r * S;
+    const d = Math.hypot(cx[i] - wantX, cy[i] - wantY);
+    if (d < bestD) { bestD = d; best = i; }
+    rect[i * 4] = (cx[i] - S / 2 + W / 2) / W; rect[i * 4 + 1] = (cy[i] - S / 2 + H / 2) / H;
+    rect[i * 4 + 2] = S / W; rect[i * 4 + 3] = S / H;
+  }
+  heldAttr[best] = 1; hole = { x: cx[best], y: cy[best], index: best };
+
+  const geo = new THREE.PlaneBufferGeometry(1, 1);
+  geo.setAttribute('aRect', new THREE.InstancedBufferAttribute(rect, 4));
+  geo.setAttribute('aHeld', new THREE.InstancedBufferAttribute(heldAttr, 1));
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide, uniforms: { uTex: { value: heroTex }, uGlow: { value: 0 }, uS: { value: S } },
+    vertexShader: `
+      attribute vec4 aRect; attribute float aHeld;
+      varying vec2 vUv; varying vec2 vTex; varying float vHeld; varying float vShade; varying float vLift;
+      uniform float uS;
+      void main() {
+        vLift = clamp(instanceMatrix[3].z / uS, 0.0, 1.0); vUv = uv; vHeld = aHeld; vTex = aRect.xy + uv * aRect.zw;
+        vec3 n = normalize(mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
+        vec3 L = normalize(vec3(-0.45, 0.65, 0.62));
+        vShade = clamp(1.0 + (dot(n, L) - L.z) * 0.5, 0.72, 1.06);
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D uTex; uniform float uGlow;
+      varying vec2 vUv; varying vec2 vTex; varying float vHeld; varying float vShade; varying float vLift;
+      void main() {
+        if (!gl_FrontFacing) { gl_FragColor = vec4(vec3(0.04, 0.045, 0.05), 1.0); return; }
+        vec3 col = texture2D(uTex, vTex).rgb * vShade;
+        if (vHeld > 0.5) col = mix(col, vec3(0.97), 0.1 + 0.2 * uGlow);   // the held tile is a touch brighter
+        float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+        col *= mix(1.0, mix(0.8, 1.0, smoothstep(0.0, 0.03, e)), smoothstep(0.02, 0.18, vLift)); // edge shading only once a tile has lifted off the wall
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.frustumCulled = false; scene.add(mesh);
+  tiles = { mesh, mat, n, cx, cy, pos: new Float32Array(n * 3), vel: new Float32Array(n * 3), rot: new Float32Array(n * 3), rvel: new Float32Array(n * 3) };
+
+  /* dark underlayer, with a pointer glow so attracted tiles read as gathering light */
+  const pz = -0.05 * S;
+  plate = new THREE.Mesh(new THREE.PlaneBufferGeometry(W * 3, H * 3), new THREE.ShaderMaterial({
+    uniforms: { uM: { value: new THREE.Vector2(1e5, 1e5) }, uR: { value: S * CONFIG.attractRadius }, uA: { value: 0 },
+      uRect: { value: new THREE.Vector4(hole.x, hole.y, S * 0.62, S * 0.62) }, uOpen: { value: 0 } },
+    vertexShader: `varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `
+      uniform vec2 uM; uniform float uR; uniform float uA; uniform vec4 uRect; uniform float uOpen; varying vec2 vP;
+      void main() {
+        if (uOpen > 0.5 && abs(vP.x - uRect.x) < uRect.z && abs(vP.y - uRect.y) < uRect.w) discard;
+        float d = length(vP - uM) / uR;
+        float g = exp(-d * d * 1.6) * uA;
+        vec3 base = mix(vec3(0.045, 0.05, 0.056), vec3(0.012, 0.014, 0.016), clamp(0.5 - vP.y / 2600.0, 0.0, 1.0));
+        gl_FragColor = vec4(base + vec3(0.16, 0.2, 0.24) * g, 1.0);
+      }`,
+  }));
+  plate.position.z = pz; scene.add(plate);
+
+  /* the room behind the wall */
+  const roomT = tex(backdropCanvas()); roomT.encoding = THREE.sRGBEncoding;
+  const room = new THREE.Mesh(new THREE.PlaneBufferGeometry(K * 14, K * 9), new THREE.MeshBasicMaterial({ map: roomT, toneMapped: false }));
+  room.position.set(hole.x, hole.y - K * 0.6, -K * 4.2); scene.add(room);
+
+  /* lights: a cold rim from behind, a soft key that follows the camera */
+  scene.add(new THREE.AmbientLight(0x8a96a8, 0.2));
+  const rim = new THREE.DirectionalLight(0x9db8ff, 0.9); rim.position.set(-K * 2, K * 3, -K * 4); scene.add(rim);
+  const rim2 = new THREE.DirectionalLight(0xffc9a8, 0.45); rim2.position.set(K * 3, K * 1, -K * 3); scene.add(rim2);
+  key = new THREE.SpotLight(0xfff1e4, 0.95, 0, 0.34, 0.95, 1); scene.add(key, key.target);
+
+  if (rig) placeRig();
+}
+let key = null;
+
+/* Where the character stands, in world px. Arranged so the face sits on the ray from the resting camera through the held tile. */
+let rigPlaced = false;
+function placeRig() {
+  rig.root.scale.setScalar(K);
+  if (!rig.root.parent) scene.add(rig.root);
+  rig.root.position.set(0, 0, 0); rig.root.updateMatrixWorld(true);
+  resetPose();
+  const reach = (rig.len.Left[0] + rig.len.Left[1]) * K;
+  const faceBind = worldP(rig.bones.Head).add(V(0, 0.09 * K, 0.04 * K));
+  const shoulderBind = worldP(rig.bones.LeftArm);
+  // The face sits on the ray from the resting camera through the held tile, so it is centred in the gap when the tile drops.
+  const depthGuess = 0.5 * K;
+  const faceX = hole.x * (D + depthGuess) / D, faceY = hole.y * (D + depthGuess) / D + 0.02 * K;
+  const rx = faceX - faceBind.x, ry = faceY - faceBind.y;
+  const sh = shoulderBind.clone().add(V(rx, ry, 0));
+  const wrist = V(hole.x + 0.11 * K, hole.y - 0.13 * K, 0);
+  const lat = wrist.x - sh.x, vert = wrist.y - sh.y;
+  const fwd = Math.sqrt(Math.max(0.0004, (0.92 * reach) ** 2 - lat * lat - vert * vert));
+  rig.root.position.set(rx, ry, -0.045 * K - fwd - shoulderBind.z);
+  rig.root.updateMatrixWorld(true);
+  rig.depth = fwd;
+  rigPlaced = true;
+}
+
+/* ───────────── Sequence (analytic in time, so it can be scrubbed and replayed) ───────────── */
+const SEQ_END = 6.2;
+let st = -1;          // -1 idle, otherwise seconds into the sequence
+let done = false, pendingStart = false;
+
+function startSequence() {
+  if (st >= 0 || done) return;
+  if (!rig) { pendingStart = true; loadingEl.classList.add('on'); return; }
+  pendingStart = false; loadingEl.classList.remove('on');
+  st = 0;
+  document.documentElement.style.overflow = 'hidden';
+  tag.classList.remove('on');
+}
+function endSequence() {
+  done = true;
+  document.documentElement.style.overflow = '';
+  afterBar.classList.add('on');
+}
+function replay() {
+  st = -1; done = false; pendingStart = false;
+  afterBar.classList.remove('on');
+  scrollTo({ top: 0 });
+  if (tiles) { tiles.pos.fill(0); tiles.vel.fill(0); tiles.rot.fill(0); tiles.rvel.fill(0); }
+}
+$('replay').addEventListener('click', replay);
+cta.addEventListener('click', startSequence);
+
+/* ───────────── Input ───────────── */
+const mouse = { x: 1e5, y: 1e5, vx: 0, vy: 0, active: false };
+let hoverHeld = false;
+function setPointer(e) {
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left - W / 2, y = -(e.clientY - r.top - H / 2);
+  if (mouse.active) { mouse.vx += x - mouse.x; mouse.vy += y - mouse.y; }
+  mouse.x = x; mouse.y = y; mouse.active = true;
+}
+addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch') setPointer(e); }, { passive: true });
+const leave = () => { mouse.active = false; mouse.x = mouse.y = 1e5; };
+document.addEventListener('mouseleave', leave);
+addEventListener('blur', leave);
+function overHeld(x, y, pad = 0) { return Math.abs(x - hole.x) < S * (0.5 + pad) && Math.abs(y - hole.y) < S * (0.5 + pad); }
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left - W / 2, y = -(e.clientY - r.top - H / 2);
+  if (overHeld(x, y, e.pointerType === 'touch' ? 0.4 : 0)) startSequence(); else nudge();
+});
+addEventListener('wheel', (e) => {
+  if (st >= 0 && !done) { e.preventDefault(); return; }
+  if (done || e.deltaY <= 0) return;
+  if (stage.getBoundingClientRect().bottom < H * 0.5) return;       // already past the hero
+  if (hoverHeld) { e.preventDefault(); startSequence(); }
+  else if (scrollY < 2) { e.preventDefault(); nudge(); }            // scrolling elsewhere points you at the held tile
+}, { passive: false });
+let nudgeT = 0;
+function nudge() { nudgeT = 1.2; tag.classList.remove('nudge'); void tag.offsetWidth; tag.classList.add('nudge'); tag.classList.add('on'); setTimeout(() => { if (!hoverHeld) tag.classList.remove('on'); }, 1600); }
+addEventListener('resize', () => { build(); });
+addEventListener('keydown', (e) => { if (st >= 0 && !done && (e.key === ' ' || e.key.startsWith('Arrow') || e.key === 'PageDown')) e.preventDefault(); });
+
+/* ───────────── Frame loop ───────────── */
+const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e4 = new THREE.Euler(), v3 = new THREE.Vector3(), s3 = new THREE.Vector3();
+const anchorP = new THREE.Vector3(), anchorQ = new THREE.Quaternion();
+let last = performance.now(), tNow = 0, dbgView = null;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!tiles) return;
+  tNow += dt;
+  const t = tNow;
+  if (st >= 0 && !done) { st += dt; if (st >= SEQ_END) { st = SEQ_END; endSequence(); } }
+  if (pendingStart && rig) startSequence();
+  const playing = st >= 0;
+
+  /* ── tiles: the pointer is an attractor ── */
+  const speed = clamp(Math.hypot(mouse.vx, mouse.vy) / 45);
+  mouse.vx = mouse.vy = 0;
+  const R = S * CONFIG.attractRadius;
+  const gain = (reduceMotion ? 0.4 : 1) * (mouse.active && !playing ? 1 : 0);
+  hoverHeld = mouse.active && !playing && overHeld(mouse.x, mouse.y);
+  canvas.style.cursor = hoverHeld ? 'pointer' : 'default';
+  tag.classList.toggle('on', hoverHeld || nudgeT > 0);
+  nudgeT = Math.max(0, nudgeT - dt);
+  if (!tag.dataset.w || tag.dataset.w !== `${W}x${H}`) { tag.dataset.w = `${W}x${H}`; }
+  tag.style.left = `${W / 2 + hole.x}px`; tag.style.top = `${H / 2 - hole.y - S * 0.5 - 40}px`;
+  tiles.mat.uniforms.uGlow.value += ((hoverHeld ? 1 : 0) - tiles.mat.uniforms.uGlow.value) * 0.2;
+
+  const { pos, vel, rot, rvel, cx, cy, n } = tiles;
+  const K_ = 95, C_ = 11;                                  // springs with a little overshoot, so tiles feel pulled, not pushed
+  for (let i = 0; i < n; i++) {
+    const i3 = i * 3, held = i === hole.index;
+    const h1 = hash(i), h2 = hash(i + 91.7), h3 = hash(i + 17.3);
+    let tx = 0, ty = 0, tz = 0, trx = 0, tryy = 0, trz = 0;
+
+    const dx = mouse.x - cx[i], dy = mouse.y - cy[i];       // toward the pointer
+    const dist = Math.hypot(dx, dy) + 0.001;
+    const f = Math.exp(-(dist * dist) / (R * R)) * gain;
+    if (f > 0.002) {
+      if (!held) {
+        const pull = f * CONFIG.attractPull * (0.55 + 0.9 * h2);   // each tile has its own 'mass', so the swarm is loose, not a rigid pinch
+        tx += dx * pull; ty += dy * pull;
+        tz += S * (0.1 + 0.8 * f * f) + h1 * 0.04 * S;    // unique depth per tile, so overlaps layer instead of intersecting
+      }
+      trx += -(dy / R) * 1.05 * f * (held ? 0.3 : 1);       // tiles turn their faces toward the pointer
+      tryy += (dx / R) * 1.05 * f * (held ? 0.3 : 1);
+      trz += (h3 - 0.5) * 0.9 * f * (0.4 + speed * 1.6);
+    }
+    if (held && !playing) {
+      const wob = hoverHeld ? 1 : 0.35;
+      tz += S * (hoverHeld ? 1.35 : 0.1);
+      trx += Math.sin(t * 1.3) * 0.02 * wob; tryy += Math.cos(t * 1.1) * 0.03 * wob; trz += Math.sin(t * 0.8 + 1.3) * 0.02 * wob;
+      if (hoverHeld) ty += Math.sin(t * 9) * S * 0.004;     // the hands tighten their grip
+    }
+    for (let a = 0; a < 3; a++) {
+      const tp = a === 0 ? tx : a === 1 ? ty : tz, tr = a === 0 ? trx : a === 1 ? tryy : trz;
+      vel[i3 + a] += (K_ * (tp - pos[i3 + a]) - C_ * vel[i3 + a]) * dt; pos[i3 + a] += vel[i3 + a] * dt;
+      rvel[i3 + a] += (K_ * 0.9 * (tr - rot[i3 + a]) - C_ * 0.95 * rvel[i3 + a]) * dt; rot[i3 + a] += rvel[i3 + a] * dt;
+    }
+    rot[i3] = clamp(rot[i3], -1.05, 1.05); rot[i3 + 1] = clamp(rot[i3 + 1], -1.05, 1.05);
+    v3.set(cx[i] + pos[i3], cy[i] + pos[i3 + 1], pos[i3 + 2]);
+    e4.set(rot[i3], rot[i3 + 1], rot[i3 + 2], 'XYZ'); q.setFromEuler(e4);
+    s3.set(S * 1.006, S * 1.006, 1);                         // hair of overlap hides seams at rest
+    if (held) { if (!playing) { anchorP.copy(v3); anchorQ.copy(q); } }
+    if (held && playing) {
+      /* the drop: let go, tile tips toward the camera and falls out of the hole */
+      const tau = Math.max(0, st - 0.2);
+      v3.copy(anchorP);
+      v3.y -= 0.08 * K * tau + 0.5 * 4.4 * K * tau * tau;
+      v3.z += 0.75 * K * tau;
+      q.copy(anchorQ).premultiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-3.4 * tau, 0.5 * tau, 0.9 * tau)));
+      if (v3.y < -H / 2 - S * 2) s3.set(0.0001, 0.0001, 1);
+    }
+    m4.compose(v3, q, s3);
+    tiles.mesh.setMatrixAt(i, m4);
+  }
+  tiles.mesh.instanceMatrix.needsUpdate = true;
+  plate.material.uniforms.uM.value.set(mouse.x, mouse.y);
+  plate.material.uniforms.uA.value += ((gain > 0 ? 1 : 0) - plate.material.uniforms.uA.value) * 0.08;
+  plate.material.uniforms.uOpen.value = playing && st > 0.18 ? 1 : 0;
+
+  /* ── camera ── */
+  let camX = 0, camY = 0, camZ = D, lookAtFace = 0;
+  const faceNow = rig ? worldP(rig.bones.Head).add(V(0, 0.09 * K, 0.04 * K)) : V(hole.x, hole.y, -0.5 * K);
+  if (playing) {
+    const u = clamp((st - 1.7) / 3.9), e = easeInOut(u);
+    const d1 = 0.09 * K, zEnd = -0.03 * K, SPLIT = 0.8;
+    if (e < SPLIT) camZ = D * Math.pow(d1 / D, e / SPLIT); else camZ = lerp(d1, zEnd, easeInOut((e - SPLIT) / (1 - SPLIT)));
+    const k = smooth(0.0, 0.6, e);
+    camX = lerp(0, faceNow.x, k); camY = lerp(0, faceNow.y + 0.05 * K * smooth(0.6, 1, e), k);
+    lookAtFace = smooth(0.72, 1, e);
+  }
+  const fovT = playing ? lerp(CONFIG.fov, 50, smooth(0.82, 1, easeInOut(clamp((st - 1.7) / 3.9)))) : CONFIG.fov;
+  if (Math.abs(camera.fov - fovT) > 0.01) { camera.fov = fovT; camera.updateProjectionMatrix(); }
+  camera.position.set(camX, camY, camZ);
+  camera.lookAt(lerp(camX, faceNow.x, lookAtFace), lerp(camY, faceNow.y, lookAtFace), lerp(-1e4, faceNow.z, lookAtFace));
+  camera.updateMatrixWorld(true);
+
+  /* ── the character ── */
+  if (rig && rigPlaced) {
+    const s = playing ? st : -1, sp = Math.max(0, s);
+    resetPose();
+    const B = rig.bones;
+    // breathing + weight shift
+    applyWorldRot(B.Spine1, rotAbout(AX, Math.sin(t * 1.5) * 0.006));
+    // head: looks down at its hands, then up at the lens
+    const headP = worldP(B.Head);
+    const toCam = camera.position.clone().sub(headP);
+    const camYaw = Math.atan2(toCam.x, toCam.z), camPitchUp = Math.atan2(toCam.y, Math.hypot(toCam.x, toCam.z));
+    const look = smooth(1.0, 2.35, s);
+    const down = 0.5 + Math.sin(t * 0.9) * 0.015;
+    const pitchDown = lerp(down, -(camPitchUp + 0.2 + 0.05 * Math.sin(t * 0.7)), look);   // positive = nose down
+    const yaw = lerp(camYaw * 0.4, camYaw * 0.95, look);
+    applyWorldRot(B.Neck, rotAbout(AX, pitchDown * 0.38)); applyWorldRot(B.Head, rotAbout(AX, pitchDown * 0.62));
+    applyWorldRot(B.Neck, rotAbout(AY, yaw * 0.35)); applyWorldRot(B.Head, rotAbout(AY, yaw * 0.65));
+    applyWorldRot(B.Head, rotAbout(V(0, 0, 1), Math.sin(t * 0.6) * 0.02 * look));
+
+    // hands: hold the tile from behind, then release and lower
+    const lower = smooth(0.55, 1.75, s), release = smooth(0.0, 0.9, s);
+    const bump = Math.sin(clamp((s - 0.0) / 0.5) * Math.PI) * (s >= 0 ? 1 : 0);   // brief open flick on release
+    for (const side of ['Left', 'Right']) {
+      const sx = side === 'Left' ? 1 : -1;                                       // character's left is +x
+      const holdW = V(sx * 0.11, -0.13, -0.045).multiplyScalar(K).applyQuaternion(anchorQ).add(anchorP);
+      const restW = new THREE.Vector3(sx * 0.25, 0.8, 0.06).multiplyScalar(K).add(rig.root.position);
+      const wrist = holdW.clone().lerp(restW, easeInOut(lower));
+      const fHold = V(-sx * 0.12, 1, 0).applyQuaternion(anchorQ), nHold = V(0, 0, 1).applyQuaternion(anchorQ);
+      const fRest = V(sx * 0.05, -1, 0.18), nRest = V(-sx, 0, 0.1);
+      const fD = fHold.clone().lerp(fRest, easeInOut(lower)).normalize(), nD = nHold.clone().lerp(nRest, easeInOut(lower)).normalize();
+      solveArm(side, wrist, V(sx * 0.7, -1, -0.15));
+      const hq = orientHand(side, fD, nD);
+      const curlHold = [0.04, 0.03, 0.03, 0.05], curlRest = [0.22, 0.3, 0.38, 0.44];
+      const curls = curlHold.map((c, i) => lerp(c, curlRest[i], release) - 0.2 * bump);
+      poseFingers(side, hq, curls, 0.25 + 0.5 * bump + 0.1 * release, 0.55 * release, t + (sx > 0 ? 0 : 1.9));
+    }
+    rig.root.updateMatrixWorld(true);
+  }
+
+  /* key light rides with the camera, always aimed at the face */
+  if (key) { key.position.set(camera.position.x - 0.25 * K, camera.position.y + 0.35 * K, camera.position.z); key.target.position.copy(faceNow); key.target.updateMatrixWorld(); }
+
+  /* chrome fades as soon as the drop starts */
+  chrome.style.opacity = playing ? '0' : '1';
+  chrome.style.pointerEvents = playing ? 'none' : '';
+
+  if (dbgView) {
+    tiles.mesh.visible = false; plate.visible = false;
+    camera.fov = dbgView.fov || 30; camera.updateProjectionMatrix();
+    camera.position.set(dbgView.x, dbgView.y, dbgView.z); camera.lookAt(dbgView.lx, dbgView.ly, dbgView.lz);
+  } else { tiles.mesh.visible = true; }
+  renderer.render(scene, camera);
+}
+
+/* ───────────── Model loading ───────────── */
+async function loadModel() {
+  let buf;
+  if (MODEL_B64.length > 200) { const bin = atob(MODEL_B64); buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i); buf = buf.buffer; }
+  else buf = await (await fetch('./assets/Xbot.glb')).arrayBuffer();
+  new THREE.GLTFLoader().parse(buf, '', (gltf) => {
+    rig = buildRig(gltf);
+    placeRig();
+    loadingEl.classList.remove('on');
+  }, (err) => console.warn('model failed', err));
+}
+
+build();
+requestAnimationFrame(frame);
+loadModel();
+window.__uicrowd = { seek(v) { st = v; done = false; document.documentElement.style.overflow = ''; }, get st() { return st; }, mouse(x, y) { mouse.x = x - W / 2; mouse.y = -(y - H / 2); mouse.active = true; }, get rig() { return rig; }, view(v) { dbgView = v; }, get K() { return K; }, get face() { return rig ? worldP(rig.bones.Head).toArray() : null; }, get hole() { return hole; } };
+})();
+</script>
