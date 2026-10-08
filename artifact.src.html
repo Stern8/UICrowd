@@ -107,8 +107,8 @@ const CONFIG = {
   sub: 'Dynamic use of HTML in canvas and audio to generate unique results.',
   tilesAcross: 14,
   holeX: 0.70, holeY: 0.50,   // where the held tile sits (fraction of viewport)
-  attractRadius: 2.8,         // pointer attractor reach, in tiles
-  attractPull: 0.5,          // how far tiles are drawn toward the pointer (0..1)
+  attractRadius: 3.4,         // reach of the pointer's pull, in tiles
+  maxTilt: 0.3,               // radians; tiles only ever tilt, they never leave their centre
   fov: 35,
   tileMeters: 0.35,           // physical size of a tile; sets the character's scale
 };
@@ -336,27 +336,28 @@ function build() {
   geo.setAttribute('aRect', new THREE.InstancedBufferAttribute(rect, 4));
   geo.setAttribute('aHeld', new THREE.InstancedBufferAttribute(heldAttr, 1));
   const mat = new THREE.ShaderMaterial({
-    side: THREE.DoubleSide, uniforms: { uTex: { value: heroTex }, uGlow: { value: 0 }, uS: { value: S } },
+    side: THREE.DoubleSide, uniforms: { uTex: { value: heroTex }, uGlow: { value: 0 } },
     vertexShader: `
       attribute vec4 aRect; attribute float aHeld;
-      varying vec2 vUv; varying vec2 vTex; varying float vHeld; varying float vShade; varying float vLift;
-      uniform float uS;
+      varying vec2 vTex; varying float vHeld; varying float vShade; varying float vSpec;
       void main() {
-        vLift = clamp(instanceMatrix[3].z / uS, 0.0, 1.0); vUv = uv; vHeld = aHeld; vTex = aRect.xy + uv * aRect.zw;
+        vHeld = aHeld; vTex = aRect.xy + uv * aRect.zw;
         vec3 n = normalize(mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
-        vec3 L = normalize(vec3(-0.45, 0.65, 0.62));
-        vShade = clamp(1.0 + (dot(n, L) - L.z) * 0.5, 0.72, 1.06);
+        vec3 L = normalize(vec3(-0.5, 0.62, 0.6));
+        float rest = L.z;                                   // brightness of an untilted tile
+        vShade = clamp(1.0 + (dot(n, L) - rest) * 0.95, 0.6, 1.08);
+        vec3 Hh = normalize(L + vec3(0.0, 0.0, 1.0));
+        vSpec = pow(max(dot(n, Hh), 0.0), 60.0) * 0.16;     // faint sheen when a tile turns its face to the light
         gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: `
       uniform sampler2D uTex; uniform float uGlow;
-      varying vec2 vUv; varying vec2 vTex; varying float vHeld; varying float vShade; varying float vLift;
+      varying vec2 vTex; varying float vHeld; varying float vShade; varying float vSpec;
       void main() {
-        if (!gl_FrontFacing) { gl_FragColor = vec4(vec3(0.04, 0.045, 0.05), 1.0); return; }
-        vec3 col = texture2D(uTex, vTex).rgb * vShade;
-        if (vHeld > 0.5) col = mix(col, vec3(0.97), 0.1 + 0.2 * uGlow);   // the held tile is a touch brighter
-        float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
-        col *= mix(1.0, mix(0.8, 1.0, smoothstep(0.0, 0.03, e)), smoothstep(0.02, 0.18, vLift)); // edge shading only once a tile has lifted off the wall
+        if (!gl_FrontFacing) { gl_FragColor = vec4(vec3(0.03, 0.035, 0.04), 1.0); return; }
+        vec3 col = texture2D(uTex, vTex).rgb;
+        col = col * vShade + vec3(vSpec);
+        if (vHeld > 0.5) col = mix(col, vec3(0.97), 0.1 * uGlow);
         gl_FragColor = vec4(col, 1.0);
       }`,
   });
@@ -365,7 +366,7 @@ function build() {
   tiles = { mesh, mat, n, cx, cy, pos: new Float32Array(n * 3), vel: new Float32Array(n * 3), rot: new Float32Array(n * 3), rvel: new Float32Array(n * 3) };
 
   /* dark underlayer, with a pointer glow so attracted tiles read as gathering light */
-  const pz = -0.05 * S;
+  const pz = -0.2 * S;   // behind the deepest tilted tile edge (maxTilt), in front of the hands
   plate = new THREE.Mesh(new THREE.PlaneBufferGeometry(W * 3, H * 3), new THREE.ShaderMaterial({
     uniforms: { uM: { value: new THREE.Vector2(1e5, 1e5) }, uR: { value: S * CONFIG.attractRadius }, uA: { value: 0 },
       uRect: { value: new THREE.Vector4(hole.x, hole.y, S * 0.62, S * 0.62) }, uOpen: { value: 0 } },
@@ -412,10 +413,10 @@ function placeRig() {
   const faceX = hole.x * (D + depthGuess) / D, faceY = hole.y * (D + depthGuess) / D + 0.02 * K;
   const rx = faceX - faceBind.x, ry = faceY - faceBind.y;
   const sh = shoulderBind.clone().add(V(rx, ry, 0));
-  const wrist = V(hole.x + 0.11 * K, hole.y - 0.13 * K, 0);
+  const wrist = V(hole.x + 0.1 * K, hole.y - 0.12 * K, 0);
   const lat = wrist.x - sh.x, vert = wrist.y - sh.y;
   const fwd = Math.sqrt(Math.max(0.0004, (0.92 * reach) ** 2 - lat * lat - vert * vert));
-  rig.root.position.set(rx, ry, -0.045 * K - fwd - shoulderBind.z);
+  rig.root.position.set(rx, ry, -0.09 * K - fwd - shoulderBind.z);
   rig.root.updateMatrixWorld(true);
   rig.depth = fwd;
   rigPlaced = true;
@@ -507,42 +508,28 @@ function frame(now) {
   tag.style.left = `${W / 2 + hole.x}px`; tag.style.top = `${H / 2 - hole.y - S * 0.5 - 40}px`;
   tiles.mat.uniforms.uGlow.value += ((hoverHeld ? 1 : 0) - tiles.mat.uniforms.uGlow.value) * 0.2;
 
-  const { pos, vel, rot, rvel, cx, cy, n } = tiles;
-  const K_ = 95, C_ = 11;                                  // springs with a little overshoot, so tiles feel pulled, not pushed
+  const { rot, rvel, cx, cy, n } = tiles;
+  const K_ = 70, C_ = 12.5;                                // a touch under-damped: a tile settles with a tiny overshoot
+  const reach = R, lift = R * 1.25;                        // the pointer hovers "lift" above the wall; tiles turn to face it
   for (let i = 0; i < n; i++) {
     const i3 = i * 3, held = i === hole.index;
-    const h1 = hash(i), h2 = hash(i + 91.7), h3 = hash(i + 17.3);
-    let tx = 0, ty = 0, tz = 0, trx = 0, tryy = 0, trz = 0;
-
-    const dx = mouse.x - cx[i], dy = mouse.y - cy[i];       // toward the pointer
-    const dist = Math.hypot(dx, dy) + 0.001;
-    const f = Math.exp(-(dist * dist) / (R * R)) * gain;
-    if (f > 0.002) {
-      if (!held) {
-        const pull = f * CONFIG.attractPull * (0.55 + 0.9 * h2);   // each tile has its own 'mass', so the swarm is loose, not a rigid pinch
-        tx += dx * pull; ty += dy * pull;
-        tz += S * (0.1 + 0.8 * f * f) + h1 * 0.04 * S;    // unique depth per tile, so overlaps layer instead of intersecting
-      }
-      trx += -(dy / R) * 1.05 * f * (held ? 0.3 : 1);       // tiles turn their faces toward the pointer
-      tryy += (dx / R) * 1.05 * f * (held ? 0.3 : 1);
-      trz += (h3 - 0.5) * 0.9 * f * (0.4 + speed * 1.6);
+    const dx = mouse.x - cx[i], dy = mouse.y - cy[i];
+    const f = Math.exp(-(dx * dx + dy * dy) / (reach * reach)) * gain;   // smooth falloff, so neighbours turn almost together
+    const share = held ? 0.25 : 1;
+    let trx = -Math.atan2(dy, lift) * f * share, tryy = Math.atan2(dx, lift) * f * share;
+    trx = clamp(trx, -CONFIG.maxTilt, CONFIG.maxTilt); tryy = clamp(tryy, -CONFIG.maxTilt, CONFIG.maxTilt);
+    if (held && !playing) {                                // held tile: a slight, living sway
+      const wob = hoverHeld ? 1.6 : 1;
+      trx += Math.sin(t * 1.3) * 0.012 * wob; tryy += Math.cos(t * 1.1) * 0.016 * wob;
     }
-    if (held && !playing) {
-      const wob = hoverHeld ? 1 : 0.35;
-      tz += S * (hoverHeld ? 1.35 : 0.1);
-      trx += Math.sin(t * 1.3) * 0.02 * wob; tryy += Math.cos(t * 1.1) * 0.03 * wob; trz += Math.sin(t * 0.8 + 1.3) * 0.02 * wob;
-      if (hoverHeld) ty += Math.sin(t * 9) * S * 0.004;     // the hands tighten their grip
+    for (let a = 0; a < 2; a++) {
+      const tr = a === 0 ? trx : tryy;
+      rvel[i3 + a] += (K_ * (tr - rot[i3 + a]) - C_ * rvel[i3 + a]) * dt; rot[i3 + a] += rvel[i3 + a] * dt;
     }
-    for (let a = 0; a < 3; a++) {
-      const tp = a === 0 ? tx : a === 1 ? ty : tz, tr = a === 0 ? trx : a === 1 ? tryy : trz;
-      vel[i3 + a] += (K_ * (tp - pos[i3 + a]) - C_ * vel[i3 + a]) * dt; pos[i3 + a] += vel[i3 + a] * dt;
-      rvel[i3 + a] += (K_ * 0.9 * (tr - rot[i3 + a]) - C_ * 0.95 * rvel[i3 + a]) * dt; rot[i3 + a] += rvel[i3 + a] * dt;
-    }
-    rot[i3] = clamp(rot[i3], -1.05, 1.05); rot[i3 + 1] = clamp(rot[i3 + 1], -1.05, 1.05);
-    v3.set(cx[i] + pos[i3], cy[i] + pos[i3 + 1], pos[i3 + 2]);
-    e4.set(rot[i3], rot[i3 + 1], rot[i3 + 2], 'XYZ'); q.setFromEuler(e4);
-    s3.set(S * 1.006, S * 1.006, 1);                         // hair of overlap hides seams at rest
-    if (held) { if (!playing) { anchorP.copy(v3); anchorQ.copy(q); } }
+    v3.set(cx[i], cy[i], held && !playing ? S * 0.03 : 0);
+    e4.set(rot[i3], rot[i3 + 1], 0, 'XYZ'); q.setFromEuler(e4);
+    s3.set(S * 1.003, S * 1.003, 1);                       // a hair of overlap hides seams at rest; tilt reopens them
+    if (held && !playing) { anchorP.copy(v3); anchorQ.copy(q); }
     if (held && playing) {
       /* the drop: let go, tile tips toward the camera and falls out of the hole */
       const tau = Math.max(0, st - 0.2);
@@ -601,7 +588,7 @@ function frame(now) {
     const bump = Math.sin(clamp((s - 0.0) / 0.5) * Math.PI) * (s >= 0 ? 1 : 0);   // brief open flick on release
     for (const side of ['Left', 'Right']) {
       const sx = side === 'Left' ? 1 : -1;                                       // character's left is +x
-      const holdW = V(sx * 0.11, -0.13, -0.045).multiplyScalar(K).applyQuaternion(anchorQ).add(anchorP);
+      const holdW = V(sx * 0.1, -0.12, -0.09).multiplyScalar(K).applyQuaternion(anchorQ).add(anchorP);
       const restW = new THREE.Vector3(sx * 0.25, 0.8, 0.06).multiplyScalar(K).add(rig.root.position);
       const wrist = holdW.clone().lerp(restW, easeInOut(lower));
       const fHold = V(-sx * 0.12, 1, 0).applyQuaternion(anchorQ), nHold = V(0, 0, 1).applyQuaternion(anchorQ);
@@ -646,6 +633,6 @@ async function loadModel() {
 build();
 requestAnimationFrame(frame);
 loadModel();
-window.__uicrowd = { seek(v) { st = v; done = false; document.documentElement.style.overflow = ''; }, get st() { return st; }, mouse(x, y) { mouse.x = x - W / 2; mouse.y = -(y - H / 2); mouse.active = true; }, get rig() { return rig; }, view(v) { dbgView = v; }, get K() { return K; }, get face() { return rig ? worldP(rig.bones.Head).toArray() : null; }, get hole() { return hole; } };
+window.__uicrowd = { seek(v) { st = v; done = false; document.documentElement.style.overflow = ''; }, get st() { return st; }, mouse(x, y) { mouse.x = x - W / 2; mouse.y = -(y - H / 2); mouse.active = true; }, get rig() { return rig; }, get rotMax() { let m = 0, c = 0; for (const v of tiles.rot) { if (Math.abs(v) > m) m = Math.abs(v); if (v !== v) c++; } return [m, c]; }, view(v) { dbgView = v; }, get K() { return K; }, get face() { return rig ? worldP(rig.bones.Head).toArray() : null; }, get hole() { return hole; } };
 })();
 </script>
